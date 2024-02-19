@@ -1,23 +1,22 @@
 package desidev.videocall.service.audio
 
-data class AudioBuffer(val buffer: ByteArray, val ptsUs: Long, val flags: Int) {
-    override fun equals(other: Any?): Boolean {
-        if (this === other) return true
-        if (javaClass != other?.javaClass) return false
+import android.media.MediaCodec
 
-        other as AudioBuffer
+class AudioBuffer(
+    val buffer: ByteArray,
+    val ptsUs: Long,
+    val flags: Int
+) {
+    override fun toString(): String {
+        val flagString = when (flags) {
+            MediaCodec.BUFFER_FLAG_CODEC_CONFIG -> "BUFFER_FLAG_CODEC_CONFIG ($flags)"
+            MediaCodec.BUFFER_FLAG_END_OF_STREAM -> "BUFFER_FLAG_END_OF_STREAM ($flags)"
+            MediaCodec.BUFFER_FLAG_KEY_FRAME -> "BUFFER_FLAG_KEY_FRAME ($flags)"
+            MediaCodec.BUFFER_FLAG_PARTIAL_FRAME -> "BUFFER_FLAG_PARTIAL_FRAME ($flags)"
+            MediaCodec.BUFFER_FLAG_DECODE_ONLY -> "BUFFER_FLAG_DECODE_ONLY ($flags)"
+            else -> "BUFFER_FLAG_NONE ($flags)"
+        }
 
-        if (!buffer.contentEquals(other.buffer)) return false
-        if (ptsUs != other.ptsUs) return false
-        if (flags != other.flags) return false
-
-        return true
-    }
-
-    override fun hashCode(): Int {
-        var result = buffer.contentHashCode()
-        result = 31 * result + ptsUs.hashCode()
-        result = 31 * result + flags
-        return result
+        return "AudioBuffer(buffer.size=${buffer.size}, ptsUs=$ptsUs, flags=$flagString)"
     }
 }

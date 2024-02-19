@@ -15,7 +15,6 @@ import android.util.Log
 import android.util.Size
 import androidx.annotation.RequiresPermission
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableStateOf
@@ -61,12 +60,15 @@ class DefaultVideoCallService internal constructor(
 
     @Composable
     override fun ViewContent(modifier: Modifier) {
+        Box(modifier = modifier) {
 
+        }
     }
 
     @Composable
     override fun PreviewContent(modifier: Modifier) {
-        Box(modifier = Modifier.fillMaxSize()) {
+        Box {
+
         }
     }
 
@@ -252,7 +254,6 @@ class DefaultVideoCallService internal constructor(
             }
         }
     }
-
 }
 
 

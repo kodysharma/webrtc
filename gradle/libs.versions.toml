@@ -40,10 +40,11 @@ kotlin-stdlib = { group = "org.jetbrains.kotlin", name = "kotlin-stdlib", versio
 kotlin-reflect = { group = "org.jetbrains.kotlin", name = "kotlin-reflect", version.ref = "kotlin" }
 androidx-foundation-layout-android = { group = "androidx.compose.foundation", name = "foundation-layout-android", version.ref = "foundationLayoutAndroid" }
 androidx-core = { group = "androidx.core", name = "core", version.ref = "core" }
+coreLibraryDesugaring = { group = "com.android.tools", name = "desugar_jdk_libs", version = "2.0.4" }
 
 [bundles]
 # webrtc module uses the following compose dependencies
-webrtc-dependencies = [
+webrtc-dep-bundle = [
     "androidx-ui",
     "androidx-ui-graphics",
     "androidx-foundation-layout-android",
@@ -52,7 +53,8 @@ webrtc-dependencies = [
     "kotlin-reflect",
     "kotlin-stdlib",
     "androidx-core",
-    "androidx-core-ktx"
+    "androidx-core-ktx",
+    "gson"
 ]
 
 [plugins]
