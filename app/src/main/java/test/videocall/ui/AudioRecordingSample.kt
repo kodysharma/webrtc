@@ -22,6 +22,7 @@ import desidev.videocall.service.SpeedMeter
 import desidev.videocall.service.audio.AudioEncoder
 import desidev.videocall.service.audio.VoiceRecorder
 import desidev.videocall.service.audio.defaultAudioEncoder
+import desidev.videocall.service.audio.stringyFyMediaFormat
 import desidev.videocall.service.ext.asMilliSec
 import desidev.videocall.service.ext.toLong
 import kotlinx.coroutines.Dispatchers
@@ -54,7 +55,7 @@ fun AudioRecordingSample() {
     suspend fun flowFromRecorderToEncoder() {
         val speedMeter = SpeedMeter("flowFromRecorderToEncoder")
 
-        withContext(Dispatchers.Default) {
+        withContext(Dispatchers.IO) {
             for (chunk in voiceRecorder.chunkFlow) {
                 encoder.enqueRawBuffer(chunk)
                 speedMeter.update()
@@ -64,9 +65,11 @@ fun AudioRecordingSample() {
 
 
     suspend fun flowFromEncoderToMuxer() {
-        withContext(Dispatchers.Default) {
-            val audioTrack = muxer.addTrack(encoder.mediaFormat())
+        withContext(Dispatchers.IO) {
+            val audioTrack = muxer.addTrack(encoder.mediaFormat().get())
             muxer.start()
+
+            Log.d(TAG, "flowFromEncoderToMuxer: Muxer started")
 
             val speedMeter = SpeedMeter("flowFromEncoderToMuxer")
 
@@ -96,6 +99,10 @@ fun AudioRecordingSample() {
             voiceRecorder.start()
             encoder.configure(voiceRecorder.format)
             encoder.startEncoder()
+
+            encoder.mediaFormat().get().let {
+                Log.d(TAG, "startRecording: Encoder media format: ${stringyFyMediaFormat(it)}")
+            }
 
             time = 0
             timer.schedule(
