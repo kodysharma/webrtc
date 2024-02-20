@@ -10,11 +10,16 @@ import com.google.gson.GsonBuilder
 import desidev.videocall.service.SpeedMeter
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.DelicateCoroutinesApi
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
 import kotlinx.coroutines.channels.ReceiveChannel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.newSingleThreadContext
@@ -77,7 +82,7 @@ interface AudioEncoder<Sink : Any> {
      * Get the media format of the encoder.
      * The media format will be available after starting the encoder.
      */
-    fun mediaFormat(): MediaFormat
+    fun mediaFormat(): Deferred<MediaFormat>
 
     sealed interface ConfigState {
         object UNCONFIG : ConfigState
@@ -104,13 +109,11 @@ fun AudioEncoder.Companion.defaultAudioEncoder(): DefaultAudioEncoder {
 
 
 class DefaultAudioEncoder : AudioEncoder<ReceiveChannel<AudioBuffer>> {
-
     private val tag = DefaultAudioEncoder::class.simpleName
-
-    private val lock = Any()
 
     private var _state: AudioEncoder.EncoderState =
         AudioEncoder.EncoderState.STOPPED(AudioEncoder.ConfigState.UNCONFIG)
+
 
     private lateinit var _encodedData: Channel<AudioBuffer>
 
@@ -123,6 +126,9 @@ class DefaultAudioEncoder : AudioEncoder<ReceiveChannel<AudioBuffer>> {
 
     private val _handlerThread = HandlerThread("AudioEncoder").apply { start() }
     private val _handler = android.os.Handler(_handlerThread.looper)
+
+    private val _scope = CoroutineScope(Dispatchers.Unconfined)
+
 
     private lateinit var _outputFormatDeferred: CompletableDeferred<MediaFormat>
 
@@ -176,9 +182,10 @@ class DefaultAudioEncoder : AudioEncoder<ReceiveChannel<AudioBuffer>> {
 
         override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) {
             _outputFormatDeferred.complete(format)
+
+            Log.d(tag, "onOutputFormatChanged: $format")
         }
     }
-
 
     override val state: AudioEncoder.EncoderState
         get() = _state
@@ -197,32 +204,45 @@ class DefaultAudioEncoder : AudioEncoder<ReceiveChannel<AudioBuffer>> {
         }
     }
 
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private suspend fun waitForChannelToBecomeEmpty() {
+        while (!_rawData.isEmpty) {
+            Log.d(tag, "waitForChannelToBecomeEmpty: Waiting for channel to become empty")
+            delay(100)
+        }
+    }
+
     override fun configure(mediaFormat: AudioFormat) {
-        if (_state is AudioEncoder.EncoderState.STOPPED) {
-            _codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
-            val format = MediaFormat.createAudioFormat(
-                MediaFormat.MIMETYPE_AUDIO_AAC,
-                mediaFormat.sampleRate,
-                mediaFormat.channelCount
-            ).apply {
-                setInteger(
-                    MediaFormat.KEY_AAC_PROFILE,
-                    MediaCodecInfo.CodecProfileLevel.AACObjectLC
+        _scope.launch {
+            if (_state is AudioEncoder.EncoderState.STOPPED) {
+                _codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
+                val format = MediaFormat.createAudioFormat(
+                    MediaFormat.MIMETYPE_AUDIO_AAC,
+                    mediaFormat.sampleRate,
+                    mediaFormat.channelCount
+                ).apply {
+                    setInteger(
+                        MediaFormat.KEY_AAC_PROFILE,
+                        MediaCodecInfo.CodecProfileLevel.AACObjectLC
+                    )
+                    setInteger(MediaFormat.KEY_BIT_RATE, 36000)
+                    setInteger(MediaFormat.KEY_PCM_ENCODING, mediaFormat.encoding)
+                }
+
+                _codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                _codec.setCallback(callback, _handler)
+
+                _state = AudioEncoder.EncoderState.STOPPED(AudioEncoder.ConfigState.CONFIGURED)
+                _outputFormatDeferred = CompletableDeferred()
+
+                Log.d(tag, "configure: Encoder configured")
+
+            } else {
+                Log.d(
+                    tag,
+                    "configure: Encoder is not in STOPPED state, first stop the encoder and then configure"
                 )
-                setInteger(MediaFormat.KEY_BIT_RATE, 36000)
-                setInteger(MediaFormat.KEY_PCM_ENCODING, mediaFormat.encoding)
             }
-
-            _codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-            _codec.setCallback(callback, _handler)
-
-            _state = AudioEncoder.EncoderState.STOPPED(AudioEncoder.ConfigState.CONFIGURED)
-            _outputFormatDeferred = CompletableDeferred()
-        } else {
-            Log.d(
-                tag,
-                "configure: Encoder is not in STOPPED state, first stop the encoder and then configure"
-            )
         }
     }
 
@@ -232,37 +252,51 @@ class DefaultAudioEncoder : AudioEncoder<ReceiveChannel<AudioBuffer>> {
      */
 
     override fun startEncoder() {
-        if (_state is AudioEncoder.EncoderState.STOPPED) {
-            _codec.start()
-            _encodedData = Channel(capacity = Channel.BUFFERED)
-            _state = AudioEncoder.EncoderState.RUNNING
-        } else {
-            Log.d(tag, "startEncoder: Encoder is not in STOPPED state")
+        _scope.launch {
+            if (_state is AudioEncoder.EncoderState.STOPPED) {
+                _codec.start()
+                _encodedData = Channel(capacity = Channel.BUFFERED)
+                _state = AudioEncoder.EncoderState.RUNNING
+
+                Log.d(tag, "startEncoder: Encoder started")
+            } else {
+                Log.d(tag, "startEncoder: Encoder is not in STOPPED state")
+            }
         }
     }
 
     /**
-     * Stop the encoder. The encoder will be in [EncoderState.STOPPED] state after stopping.
+     * Stop the encoder. The encoder will be in [AudioEncoder.EncoderState.STOPPED] state after stopping.
      * This closes the [encodedData] channel. when you start the encoder again, a new encoded data channel [encodedData] will be created.
      */
-    override fun stopEncoder() {
-        if (_state is AudioEncoder.EncoderState.RUNNING) {
-            _codec.stop()
-            _encodedData.close()
-            _state = AudioEncoder.EncoderState.STOPPED(AudioEncoder.ConfigState.CONFIGURED)
-        } else {
-            Log.d(tag, "stopEncoder: Encoder is not in RUNNING state")
+    override fun stopEncoder(): Unit {
+        _scope.launch {
+            if (_state is AudioEncoder.EncoderState.RUNNING) {
+                waitForChannelToBecomeEmpty()
+                _codec.flush()
+                _codec.stop()
+                _encodedData.close()
+                _state = AudioEncoder.EncoderState.STOPPED(AudioEncoder.ConfigState.CONFIGURED)
+
+                Log.d(tag, "stopEncoder: Encoder stopped")
+
+            } else {
+                Log.d(tag, "stopEncoder: Encoder is not in RUNNING state")
+            }
         }
     }
 
+
     override fun enqueRawBuffer(audioBuffer: AudioBuffer) {
-        if (_state is AudioEncoder.EncoderState.RUNNING) {
-            val result = _rawData.trySend(audioBuffer)
-            if (result.isClosed || result.isFailure) {
-                Log.d(tag, "Dropped raw buffer: $audioBuffer")
+        _scope.launch {
+            if (_state is AudioEncoder.EncoderState.RUNNING) {
+                val result = _rawData.trySend(audioBuffer)
+                if (result.isClosed || result.isFailure) {
+                    Log.d(tag, "Dropped raw buffer: $audioBuffer")
+                }
+            } else {
+                Log.d(tag, "enqueRawBuffer: Encoder is not in RUNNING state")
             }
-        } else {
-            Log.d(tag, "enqueRawBuffer: Encoder is not in RUNNING state")
         }
     }
 
@@ -271,26 +305,29 @@ class DefaultAudioEncoder : AudioEncoder<ReceiveChannel<AudioBuffer>> {
      * The encoder can not be used after releasing.
      */
     override fun release() {
-        if (_state is AudioEncoder.EncoderState.RUNNING) {
-            stopEncoder()
+        _scope.launch {
+            if (_state is AudioEncoder.EncoderState.RUNNING) {
+                stopEncoder()
+            }
+            _codec.release()
+            _handlerThread.quitSafely()
+            _state = AudioEncoder.EncoderState.RELEASED
+            if (!_outputFormatDeferred.isCompleted) _outputFormatDeferred.cancel("Encoder is released")
         }
-        _codec.release()
-        _handlerThread.quitSafely()
-        _state = AudioEncoder.EncoderState.RELEASED
-
-        if (!_outputFormatDeferred.isCompleted) _outputFormatDeferred.cancel("Encoder is released")
     }
 
     /**
      * If you want to get the media format with the codec specific data `CSD` call this method after starting the encoder.
      * else you can call this method after configuring the encoder.
      */
-    override fun mediaFormat(): MediaFormat {
-        assert(_state is AudioEncoder.EncoderState.RUNNING || (_state is AudioEncoder.EncoderState.STOPPED && (_state as AudioEncoder.EncoderState.STOPPED).configState is AudioEncoder.ConfigState.CONFIGURED))
-        return if (_state is AudioEncoder.EncoderState.RUNNING) {
-            runBlocking { _outputFormatDeferred.await() }
-        } else {
-            _codec.outputFormat
+    override fun mediaFormat(): Deferred<MediaFormat> {
+        return _scope.async {
+            assert(_state is AudioEncoder.EncoderState.RUNNING || (_state is AudioEncoder.EncoderState.STOPPED && (_state as AudioEncoder.EncoderState.STOPPED).configState is AudioEncoder.ConfigState.CONFIGURED))
+            if (_state is AudioEncoder.EncoderState.RUNNING) {
+                runBlocking { _outputFormatDeferred.await() }
+            } else {
+                _codec.outputFormat
+            }
         }
     }
 }
@@ -358,7 +395,11 @@ class AudioEncoderImpl {
                     javaExecutor.execute {
                         val byteBuffer = codec.getOutputBuffer(index)!!
                         val audioBuffer =
-                            AudioBuffer(ByteArray(info.size), info.presentationTimeUs, info.flags)
+                            AudioBuffer(
+                                ByteArray(info.size),
+                                info.presentationTimeUs,
+                                info.flags
+                            )
                         byteBuffer.get(audioBuffer.buffer)
 
                         try {
