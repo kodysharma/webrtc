@@ -1,7 +1,7 @@
 package desidev.videocall.serivice
 
 import desidev.videocall.service.SpeedMeter
-import desidev.videocall.service.audio.CoroutineExecutor
+import desidev.videocall.service.codec.CoroutineExecutor
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
 

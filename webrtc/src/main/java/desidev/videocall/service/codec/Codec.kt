@@ -1,18 +1,18 @@
-package desidev.videocall.service.audio
+package desidev.videocall.service.codec
 
 import android.media.AudioFormat
 import android.media.MediaFormat
 import java.util.concurrent.Future
 
 
-interface AudioEncoder<Sink : Any> {
-    val state: EncoderState
+interface Tantra<in inPort : Any, out outPort : Any> {
+    val outPort: outPort
+    fun setInPort(inPort: inPort)
+}
 
-    /**
-     * Implementation can decide how to provide the data.
-     * Output Sink can be a channel, queue, or any other data structure.
-     */
-    val encodedData: Sink
+
+interface Codec<in inPort : Any, out outPort : Any> : Tantra<inPort, outPort> {
+    val state: State
 
     /**
      * Configure the encoder with the given [audioFormat]
@@ -24,27 +24,21 @@ interface AudioEncoder<Sink : Any> {
 
     /**
      * Start the encoder. Before starting the encoder, it should be configured with [configure] method.
-     * The encoder will start encoding the raw audio buffer and the encoded data will be available in [encodedData] queue.
-     * The encoder will be in [EncoderState.RUNNING] state after starting.
+     * The encoder will start encoding the raw audio buffer and the encoded data will be available in [output] queue.
+     * The encoder will be in [State.RUNNING] state after starting.
      * The encoder can be stopped by calling [stopEncoder] method.
      */
     fun startEncoder()
 
 
     /**
-     * Stop the encoder. The encoder will be in [EncoderState.STOPPED] state after stopping.
+     * Stop the encoder. The encoder will be in [State.STOPPED] state after stopping.
      * The encoder can be started again by calling [startEncoder] method.
      */
     fun stopEncoder()
 
     /**
-     * Enqueue the raw audio buffer to the encoder.
-     * The buffer will be encoded and the encoded data will be available in [encodedData] queue.
-     */
-    fun enqueRawBuffer(audioBuffer: AudioBuffer)
-
-    /**
-     * Release the encoder. The encoder will be in [EncoderState.RELEASED] state after releasing.
+     * Release the encoder. The encoder will be in [State.RELEASED] state after releasing.
      * The encoder can not be used after releasing.
      */
     fun release()
@@ -57,15 +51,12 @@ interface AudioEncoder<Sink : Any> {
      */
     fun mediaFormat(): Future<MediaFormat>
 
-    sealed interface ConfigState {
-        data object UNCONFIG : ConfigState
-        data object CONFIGURED : ConfigState
-    }
-
-    sealed interface EncoderState {
-        data class STOPPED(val configState: ConfigState) : EncoderState
-        data object RUNNING : EncoderState
-        data object RELEASED : EncoderState
+    enum class State {
+        UNINITIALIZED,
+        STOPPED,
+        RUNNING,
+        IDLE,
+        RELEASED
     }
 
     companion object

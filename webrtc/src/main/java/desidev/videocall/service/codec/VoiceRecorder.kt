@@ -1,4 +1,4 @@
-package desidev.videocall.service.audio
+package desidev.videocall.service.codec
 
 import android.annotation.SuppressLint
 import android.media.AudioFormat
@@ -31,7 +31,6 @@ class VoiceRecorder private constructor(
     val chunkSize: Int,
     val chunkTimeLenUs: Int,
 ) {
-
     private val TAG = VoiceRecorder::class.simpleName
     private val coroutineScope = CoroutineScope(Dispatchers.IO)
     private var ptsUs: Long = 0
@@ -105,7 +104,6 @@ class VoiceRecorder private constructor(
             else -> "Unknown"
         }
     }
-
 
     class Builder {
         private var sampleRate: Int = 24000
