@@ -1,4 +1,4 @@
-package desidev.videocall.service.codec
+package desidev.videocall.service.mediasrc
 
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.locks.ReentrantLock

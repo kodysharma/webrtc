@@ -1,4 +1,4 @@
-package desidev.videocall.service.codec
+package desidev.videocall.service.mediasrc
 
 import android.annotation.SuppressLint
 import android.media.AudioFormat
@@ -16,8 +16,6 @@ import desidev.videocall.service.ext.toMilliSec
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -32,17 +30,18 @@ class VoiceRecorder private constructor(
     val chunkTimeLenUs: Int,
 ) {
     private val TAG = VoiceRecorder::class.simpleName
-    private val coroutineScope = CoroutineScope(Dispatchers.IO)
+    private val _scope = CoroutineScope(Dispatchers.IO)
     private var ptsUs: Long = 0
 
-    private val speedMeter = SpeedMeter("VoiceRecorder")
+    private val _speedMeter = SpeedMeter("VoiceRecorder")
 
-    private var audioBufferChannel = Channel<AudioBuffer>(capacity = Channel.BUFFERED)
+    private var _sendingPort = SendingPort<AudioBuffer>()
 
-    val chunkFlow: ReceiveChannel<AudioBuffer> get() = audioBufferChannel
+    val outPort: ReceivingPort<AudioBuffer>
+        get() = _sendingPort
 
     @SuppressLint("MissingPermission")
-    private val audioRecord = AudioRecord(
+    private val _audioRecord = AudioRecord(
         audioSource,
         sampleRate,
         channelConfig,
@@ -50,34 +49,35 @@ class VoiceRecorder private constructor(
         chunkSize
     )
 
-    val format: AudioFormat get() = audioRecord.format
+    val format: AudioFormat get() = _audioRecord.format
 
     fun start() {
-        audioRecord.startRecording()
+        _audioRecord.startRecording()
+        _sendingPort.reopen()
         startFlowingOutput()
     }
 
     fun stop() {
-        audioRecord.stop()
-        audioBufferChannel.close()
-        audioBufferChannel = Channel(capacity = Channel.BUFFERED)
+        _audioRecord.stop()
+        _sendingPort.close()
+        _sendingPort.close()
     }
 
     fun release() {
-        if (audioRecord.state == AudioRecord.RECORDSTATE_RECORDING) {
+        if (_audioRecord.state == AudioRecord.RECORDSTATE_RECORDING) {
             stop()
         }
-        audioRecord.release()
-        coroutineScope.cancel("VoiceRecorder is released")
-        speedMeter.stop()
+        _audioRecord.release()
+        _scope.cancel("VoiceRecorder is released")
+        _speedMeter.stop()
     }
 
 
-    private fun startFlowingOutput() = coroutineScope.launch {
+    private fun startFlowingOutput() = _scope.launch {
         // Jab tak recording chal rahi hai aur coroutine active hain tab tak buffer bhejte raho
         // (send buffer until recording and coroutine is active)
-        while (isActive && audioRecord.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
-            audioRecord.let {
+        while (isActive && _audioRecord.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+            _audioRecord.let {
                 val buffer = ByteArray(chunkSize)
 
                 // chunkTimeLen ka 80% intzar kare, jabtak buffer fill ho rahi hain
@@ -87,8 +87,10 @@ class VoiceRecorder private constructor(
 
                 if (status > 0) {
                     ptsUs += chunkTimeLenUs
-                    audioBufferChannel.trySend(AudioBuffer(buffer, ptsUs, 0))
-                    speedMeter.update()
+                    with(_sendingPort) {
+                        if (isOpenForSend) send(AudioBuffer(buffer, ptsUs, 0))
+                    }
+                    _speedMeter.update()
                 } else {
                     Log.d(TAG, "AudioRecorder: ${getErrorMessage(status)}")
                 }

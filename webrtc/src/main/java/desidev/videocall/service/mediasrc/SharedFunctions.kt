@@ -1,4 +1,4 @@
-package desidev.videocall.service.codec
+package desidev.videocall.service.mediasrc
 
 import android.media.MediaFormat
 import com.google.gson.GsonBuilder

@@ -1,6 +1,5 @@
 package desidev.videocall.service.codec
 
-import android.media.AudioFormat
 import android.media.MediaFormat
 import java.util.concurrent.Future
 
@@ -11,15 +10,15 @@ interface Tantra<in inPort : Any, out outPort : Any> {
 }
 
 
-interface Codec<in inPort : Any, out outPort : Any> : Tantra<inPort, outPort> {
+interface Codec<in I : Any, out O : Any> : Tantra<I, O> {
     val state: State
 
     /**
-     * Configure the encoder with the given [audioFormat]
+     * Configure the encoder with the given [format]
      * Audio format should contain the sample rate, channel count and encoding.
      * The encoder will be in [ConfigState.CONFIGURED] state after configuring.
      */
-    fun configure(audioFormat: AudioFormat)
+    fun configure(format: MediaFormat)
 
 
     /**

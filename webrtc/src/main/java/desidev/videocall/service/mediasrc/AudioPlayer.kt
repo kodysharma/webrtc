@@ -1,4 +1,4 @@
-package desidev.videocall.service.codec
+package desidev.videocall.service.mediasrc
 
 import android.media.AudioFormat
 import android.media.AudioManager
@@ -13,12 +13,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.consumeAsFlow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import kotlin.coroutines.CoroutineContext
-import kotlin.coroutines.resume
-import kotlin.coroutines.suspendCoroutine
 
 
 class AudioPlayer(
@@ -68,12 +65,12 @@ class AudioPlayer(
             var trackInputSamples: Flow<AudioBuffer> = inputSamples
 
             if (mime !=  MediaFormat.MIMETYPE_AUDIO_RAW) {
-                suspendCoroutine { cont ->
+               /* suspendCoroutine { cont ->
                     trackInputSamples = audioDecoding(inputSamples, inputFormat) {
                         cont.resume(Unit)
                         trackInputFormat = it
                     }.consumeAsFlow()
-                }
+                }*/
             }
 
 

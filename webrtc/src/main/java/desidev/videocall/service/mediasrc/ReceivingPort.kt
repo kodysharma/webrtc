@@ -1,4 +1,4 @@
-package desidev.videocall.service.codec
+package desidev.videocall.service.mediasrc
 
 interface ReceivingPort<out T : Any> {
     val isOpenForReceive: Boolean

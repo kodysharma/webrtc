@@ -19,13 +19,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import desidev.videocall.service.SpeedMeter
-import desidev.videocall.service.codec.AudioBuffer
 import desidev.videocall.service.codec.Codec
-import desidev.videocall.service.codec.SendingPort
-import desidev.videocall.service.codec.VoiceRecorder
+import desidev.videocall.service.codec.configure
 import desidev.videocall.service.codec.createAudioEncoder
 import desidev.videocall.service.ext.asMilliSec
 import desidev.videocall.service.ext.toLong
+import desidev.videocall.service.mediasrc.AudioBuffer
+import desidev.videocall.service.mediasrc.SendingPort
+import desidev.videocall.service.mediasrc.VoiceRecorder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -44,7 +45,13 @@ fun AudioRecordingSample() {
     val voiceRecorder = remember {
         VoiceRecorder.Builder().setChunkLenInMs(20.asMilliSec.toLong()).build()
     }
-    val encoder = remember { Codec.createAudioEncoder() }
+    val encoder = remember {
+        Codec.createAudioEncoder().apply {
+            setInPort(voiceRecorderOutput)
+            configure(voiceRecorder.format)
+        }
+    }
+
     var muxer by remember {
         mutableStateOf(MediaMuxerWrapper("${Environment.getExternalStorageDirectory()}/audio.mp4"))
     }
@@ -52,22 +59,6 @@ fun AudioRecordingSample() {
     var isRecording by remember { mutableStateOf(false) }
     var timer by remember { mutableStateOf(Timer()) }
     var time by remember { mutableLongStateOf(0L) }
-
-
-    suspend fun flowFromRecorderToEncoder() {
-        val speedMeter = SpeedMeter("flowFromRecorderToEncoder")
-        encoder.setInPort(voiceRecorderOutput)
-        withContext(Dispatchers.IO) {
-            try {
-                for (chunk in voiceRecorder.chunkFlow) {
-                    voiceRecorderOutput.send(chunk)
-                    speedMeter.update()
-                }
-            } catch (ex: Exception) {
-                Log.e(TAG, "flowFromRecorderToEncoder: ", ex)
-            }
-        }
-    }
 
 
     suspend fun flowFromEncoderToMuxer() {
@@ -108,28 +99,24 @@ fun AudioRecordingSample() {
 
 
     fun startRecording() {
-        scope.launch {
-            isRecording = true
-            voiceRecorderOutput.apply {
-                if (!isOpenForSend) reopen()
-            }
-            voiceRecorder.start()
-            encoder.configure(voiceRecorder.format)
-            encoder.startEncoder()
+        isRecording = true
+        voiceRecorder.start()
+        encoder.setInPort(voiceRecorder.outPort)
+        encoder.startEncoder()
 
-            time = 0
-            timer.schedule(
-                object : TimerTask() {
-                    override fun run() {
-                        time += 1
-                    }
-                },
-                0,
-                1000
-            )
+        time = 0
+        timer.schedule(
+            object : TimerTask() {
+                override fun run() {
+                    time += 1
+                }
+            },
+            0,
+            1000
+        )
 
-            launch { flowFromRecorderToEncoder() }
-            flowFromEncoderToMuxer()
+        with(scope) {
+            launch { flowFromEncoderToMuxer() }
         }
     }
 

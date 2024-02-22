@@ -1,10 +1,12 @@
 package desidev.videocall.service.codec
 
-import android.media.AudioFormat
 import android.media.MediaCodec
-import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.util.Log
+import desidev.videocall.service.mediasrc.AudioBuffer
+import desidev.videocall.service.mediasrc.ReceivingPort
+import desidev.videocall.service.mediasrc.SendingPort
+import desidev.videocall.service.mediasrc.stringyFyMediaFormat
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Future
 import java.util.concurrent.locks.ReentrantLock
@@ -36,12 +38,17 @@ class AudioEncoder : Codec<ReceivingPort<AudioBuffer>, ReceivingPort<AudioBuffer
     private lateinit var _inputFormat: MediaFormat
     private var _inPort: ReceivingPort<AudioBuffer>? = null
 
-    override fun configure(audioFormat: AudioFormat) {
+    private val _outPort = SendingPort<AudioBuffer>()
+
+    override val outPort: ReceivingPort<AudioBuffer> = _outPort
+
+    override fun configure(format: MediaFormat) {
         stateLock.withLock {
             // initialize the encoder if not initialized
             if (_state == Codec.State.UNINITIALIZED) {
-                _inputFormat = audioFormat.toMediaFormat()
-                _codec = MediaCodec.createEncoderByType(_inputFormat.getString(MediaFormat.KEY_MIME)!!)
+                _inputFormat = format
+                _codec =
+                    MediaCodec.createEncoderByType(_inputFormat.getString(MediaFormat.KEY_MIME)!!)
 
                 _codec.configure(_inputFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
                 _codec.start()
@@ -62,10 +69,6 @@ class AudioEncoder : Codec<ReceivingPort<AudioBuffer>, ReceivingPort<AudioBuffer
         }
     }
 
-    private val _outPort = SendingPort<AudioBuffer>()
-
-    override val outPort: ReceivingPort<AudioBuffer> = _outPort
-
     override fun startEncoder() {
         stateLock.withLock {
             if (_state == Codec.State.STOPPED) {
@@ -85,7 +88,8 @@ class AudioEncoder : Codec<ReceivingPort<AudioBuffer>, ReceivingPort<AudioBuffer
                                 audioBuffer = _inPort?.tryReceive()
                                 stateLock.withLock {
                                     if (isActive()) {
-                                        _state = if(audioBuffer == null) Codec.State.IDLE else Codec.State.RUNNING
+                                        _state =
+                                            if (audioBuffer == null) Codec.State.IDLE else Codec.State.RUNNING
                                     }
                                 }
                             }
@@ -129,7 +133,10 @@ class AudioEncoder : Codec<ReceivingPort<AudioBuffer>, ReceivingPort<AudioBuffer
                             _codec.releaseOutputBuffer(outIndex, false)
                         } else if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                             _outputFormatFuture.complete(_codec.outputFormat)
-                            Log.d(TAG, "OutputFormat changed: ${stringyFyMediaFormat(_codec.outputFormat)} ")
+                            Log.d(
+                                TAG,
+                                "OutputFormat changed: ${stringyFyMediaFormat(_codec.outputFormat)} "
+                            )
                         }
                     }
                 }.start()
@@ -151,20 +158,6 @@ class AudioEncoder : Codec<ReceivingPort<AudioBuffer>, ReceivingPort<AudioBuffer
     private fun isActive() =
         stateLock.withLock { _state == Codec.State.RUNNING || _state == Codec.State.IDLE }
 
-    private fun AudioFormat.toMediaFormat(): MediaFormat {
-        return MediaFormat.createAudioFormat(
-            MediaFormat.MIMETYPE_AUDIO_AAC,
-            sampleRate,
-            channelCount
-        ).apply {
-            setInteger(
-                MediaFormat.KEY_AAC_PROFILE,
-                MediaCodecInfo.CodecProfileLevel.AACObjectLC
-            )
-            setInteger(MediaFormat.KEY_BIT_RATE, 36000)
-            setInteger(MediaFormat.KEY_PCM_ENCODING, encoding)
-        }
-    }
 
     override fun setInPort(inPort: ReceivingPort<AudioBuffer>) {
         _inPort = inPort
