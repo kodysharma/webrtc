@@ -7,8 +7,8 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
+import android.media.Image
 import android.media.ImageReader
-import android.media.MediaRecorder
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
@@ -20,21 +20,20 @@ class CameraWrapper(
     context: Context
 ) {
     private val TAG = "CameraWrapper"
-    private var cameraManager: CameraManager =
-        context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+    private var cameraManager: CameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
 
     private var lensFacing = CameraCharacteristics.LENS_FACING_FRONT
-
     private var handlerThread = HandlerThread("CameraHandler").apply { start() }
-    val handler = Handler(handlerThread.looper)
+    private val handler = Handler(handlerThread.looper)
 
-    var cameraDevice: CameraDevice? = null
-
-    val imageReader by lazy {
+    private val imageReader by lazy {
         val size = getMaxVideoSize(getCameraId())
         ImageReader.newInstance(size.width, size.height, ImageFormat.YUV_420_888, 2)
     }
+    private val surfaces = mutableListOf(imageReader.surface)
+    private var cameraDevice: CameraDevice? = null
 
+    private val encoderWrapper: EncoderWrapper = EncoderWrapper()
 
     private fun getCameraId(): String {
         for (cameraId in cameraManager.cameraIdList) {
@@ -52,7 +51,7 @@ class CameraWrapper(
     }
 
     @SuppressWarnings("MissingPermission")
-    fun openCamera(id: String) {
+    private fun openCamera(id: String) {
         cameraManager.openCamera(id, object : CameraDevice.StateCallback() {
             override fun onOpened(camera: CameraDevice) {
                 cameraDevice = camera
@@ -86,9 +85,9 @@ class CameraWrapper(
         }, handler)
     }
 
-    fun createSession() {
+    private fun createSession() {
         cameraDevice?.createCaptureSession(
-            listOf(imageReader.surface),
+            surfaces,
             object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(session: CameraCaptureSession) {
                     Log.d(TAG, "Camera session configured")
@@ -104,7 +103,7 @@ class CameraWrapper(
     }
 
 
-    fun requestContinuousImages(session: CameraCaptureSession) {
+    private fun requestContinuousImages(session: CameraCaptureSession) {
         SENSOR_INFO_SENSITIVITY_RANGE
         val captureRequest = session.device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
 
@@ -125,24 +124,29 @@ class CameraWrapper(
              }
          }*/
 
-//        handler.post(captureRunnable)
-
-        captureRequest.addTarget(imageReader.surface)
+        surfaces.forEach {
+            captureRequest.addTarget(it)
+        }
         session.setRepeatingRequest(captureRequest.build(), null, null)
     }
-
 
     fun startCamera() {
         val cameraId = getCameraId()
         openCamera(cameraId)
     }
 
+    fun stopCamera() {
+        cameraDevice?.close()
+        handlerThread.quitSafely()
+        imageReader.close()
+    }
+
     private fun getMaxVideoSize(id: String): Size {
         val config = cameraManager.getCameraCharacteristics(id)
             .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
         if (config != null) {
-            return config.getOutputSizes(MediaRecorder::class.java)
-                .find { it.width <= 480 }!!
+            return config.getOutputSizes(ImageFormat.YUV_420_888)
+                .find { it.width == 640 && it.height == 640 }!!
         }
         return Size(0, 0)
     }
@@ -207,6 +211,12 @@ class CameraWrapper(
         Log.d(TAG, gson.toJson(logData))
     }
 
+    fun setFrameListener(listener: (Image) -> Unit) {
+        imageReader.setOnImageAvailableListener({ reader ->
+            val image = reader.acquireLatestImage()
+            listener(image)
+        }, handler)
+    }
 }
 
 

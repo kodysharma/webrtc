@@ -21,7 +21,6 @@ import androidx.compose.ui.Modifier
 import desidev.videocall.service.SpeedMeter
 import desidev.videocall.service.codec.Codec
 import desidev.videocall.service.codec.configure
-import desidev.videocall.service.codec.createAudioEncoder
 import desidev.videocall.service.ext.asMilliSec
 import desidev.videocall.service.ext.toLong
 import desidev.videocall.service.mediasrc.AudioBuffer

@@ -34,6 +34,12 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
 
+
+/**
+ * This is the old implementation of the Camera class. It is not used in the project anymore.
+ * It is kept here for reference purposes.
+ */
+
 class Camera(var cameraId: String, private val cameraManager: CameraManager) {
     sealed class Output {
         class VideoFormat(val format: MediaFormat) : Output()

@@ -15,9 +15,8 @@ import kotlin.concurrent.withLock
 /**
  * Default audio encoder implementation. This class uses
  * [MediaCodec](https://developer.android.com/reference/android/media/MediaCodec) to encode the raw audio buffer.
- * The encoded data will be available in [output] channel.
  */
-class AudioEncoder : Codec<ReceivingPort<AudioBuffer>, ReceivingPort<AudioBuffer>> {
+class AudioEncoder : Codec {
     companion object {
         private val TAG = AudioEncoder::class.simpleName
     }
@@ -40,7 +39,7 @@ class AudioEncoder : Codec<ReceivingPort<AudioBuffer>, ReceivingPort<AudioBuffer
 
     private val _outPort = SendingPort<AudioBuffer>()
 
-    override val outPort: ReceivingPort<AudioBuffer> = _outPort
+    val outPort: ReceivingPort<AudioBuffer> = _outPort
 
     override fun configure(format: MediaFormat) {
         stateLock.withLock {
@@ -64,7 +63,6 @@ class AudioEncoder : Codec<ReceivingPort<AudioBuffer>, ReceivingPort<AudioBuffer
                 _codec.reset()
                 _codec.configure(_inputFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
                 _codec.start()
-                _outputFormatFuture = CompletableFuture()
             }
         }
     }
@@ -76,6 +74,7 @@ class AudioEncoder : Codec<ReceivingPort<AudioBuffer>, ReceivingPort<AudioBuffer
                     if (!isOpenForSend) reopen()
                 }
                 _state = Codec.State.RUNNING
+                _outputFormatFuture = CompletableFuture()
 
                 Thread {
                     while (isActive()) {
@@ -159,7 +158,7 @@ class AudioEncoder : Codec<ReceivingPort<AudioBuffer>, ReceivingPort<AudioBuffer
         stateLock.withLock { _state == Codec.State.RUNNING || _state == Codec.State.IDLE }
 
 
-    override fun setInPort(inPort: ReceivingPort<AudioBuffer>) {
+    fun setInPort(inPort: ReceivingPort<AudioBuffer>) {
         _inPort = inPort
     }
 

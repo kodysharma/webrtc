@@ -3,15 +3,11 @@ package desidev.videocall.service.codec
 import android.media.AudioFormat
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
-import desidev.videocall.service.mediasrc.AudioBuffer
-import desidev.videocall.service.mediasrc.ReceivingPort
 
 
-fun Codec.Companion.createAudioEncoder(): Codec<ReceivingPort<AudioBuffer>, ReceivingPort<AudioBuffer>> {
-    return AudioEncoder()
-}
 
-fun Codec<*, *>.configure(format: AudioFormat) {
+
+fun Codec.configure(format: AudioFormat) {
     val mediaFormat = MediaFormat.createAudioFormat(
         MediaFormat.MIMETYPE_AUDIO_AAC,
         format.sampleRate,

@@ -13,13 +13,13 @@ import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
 
-class AudioDecoder : Codec<ReceivingPort<AudioBuffer>, ReceivingPort<AudioBuffer>> {
+class AudioDecoder : Codec {
     companion object {
         private val TAG = AudioDecoder::class.simpleName
     }
 
     private var _outPort = SendingPort<AudioBuffer>()
-    override val outPort: ReceivingPort<AudioBuffer>
+    val outPort: ReceivingPort<AudioBuffer>
         get() = _outPort
 
     private var _state: Codec.State = Codec.State.UNINITIALIZED
@@ -66,7 +66,7 @@ class AudioDecoder : Codec<ReceivingPort<AudioBuffer>, ReceivingPort<AudioBuffer
         }
     }
 
-    override fun setInPort(inPort: ReceivingPort<AudioBuffer>) {
+    fun setInPort(inPort: ReceivingPort<AudioBuffer>) {
         _inPort = inPort
     }
 

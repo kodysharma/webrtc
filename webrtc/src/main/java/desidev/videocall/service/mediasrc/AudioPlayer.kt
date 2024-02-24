@@ -89,6 +89,7 @@ class AudioPlayer(
                 trackBufferSize,
                 AudioTrack.MODE_STREAM
             )
+            
 
             audioTrack!!.play()
 

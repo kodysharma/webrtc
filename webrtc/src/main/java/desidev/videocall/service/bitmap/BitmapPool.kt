@@ -3,10 +3,8 @@ package desidev.videocall.service.bitmap
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.util.Size
-import kotlinx.coroutines.DelicateCoroutinesApi
 import java.util.concurrent.ConcurrentLinkedQueue
 
-@OptIn(DelicateCoroutinesApi::class)
 class BitmapPool(
     val dimen: Size,                                                    // Dimension of the bitmaps inside the pool
     val config: Bitmap.Config = Bitmap.Config.ARGB_8888,                // Bitmap configuration

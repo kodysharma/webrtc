@@ -21,6 +21,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import desidev.videocall.service.bitmap.BitmapPool
 import desidev.videocall.service.bitmap.BitmapWrapper
+import desidev.videocall.service.camera.CameraLensFacing
 import desidev.videocall.service.yuv.YuvToRgbConverter
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -51,7 +52,7 @@ class DefaultVideoCallService internal constructor(
 
     override val isAudioMuted: StateFlow<Boolean> = settings.isAudioMuted
     override val isVideoMuted: StateFlow<Boolean> = settings.isVideoMuted
-    override val cameraFace: StateFlow<CameraFace> = settings.cameraFace
+    override val cameraFace: StateFlow<CameraLensFacing> = settings.cameraFace
 
 
     init {
@@ -72,7 +73,7 @@ class DefaultVideoCallService internal constructor(
         }
     }
 
-    override fun switchCamera(camera: CameraFace) {
+    override fun switchCamera(camera: CameraLensFacing) {
         handler.send(Event.SwitchCamera(camera))
     }
 
@@ -112,8 +113,9 @@ class DefaultVideoCallService internal constructor(
     @Suppress("MissingPermission")
     private fun openCamera() {
         val selectedCameraLensFace = when (cameraFace.value) {
-            CameraFace.FRONT -> CameraCharacteristics.LENS_FACING_FRONT
-            CameraFace.BACK -> CameraCharacteristics.LENS_FACING_BACK
+            CameraLensFacing.FRONT -> CameraCharacteristics.LENS_FACING_FRONT
+            CameraLensFacing.BACK -> CameraCharacteristics.LENS_FACING_BACK
+            CameraLensFacing.EXTERNAL -> CameraCharacteristics.LENS_FACING_EXTERNAL
         }
 
         val id = cameraManager.cameraIdList.find { id ->
@@ -178,7 +180,7 @@ class DefaultVideoCallService internal constructor(
     internal data class Settings(
         val isAudioMuted: MutableStateFlow<Boolean> = MutableStateFlow(false),
         val isVideoMuted: MutableStateFlow<Boolean> = MutableStateFlow(false),
-        val cameraFace: MutableStateFlow<CameraFace> = MutableStateFlow(CameraFace.FRONT)
+        val cameraFace: MutableStateFlow<CameraLensFacing> = MutableStateFlow(CameraLensFacing.FRONT)
     )
 
     internal inner class CameraOutput {
@@ -221,7 +223,7 @@ class DefaultVideoCallService internal constructor(
         data object UnMuteAudio : Event
         data object MuteVideo : Event
         data object UnMuteVideo : Event
-        data class SwitchCamera(val cameraFace: CameraFace) : Event
+        data class SwitchCamera(val cameraFace: CameraLensFacing) : Event
     }
 
     internal inner class ServiceHandler(looper: Looper) : Handler(looper) {

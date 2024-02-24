@@ -2,12 +2,13 @@ package desidev.videocall.service
 
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import desidev.videocall.service.camera.CameraLensFacing
 import kotlinx.coroutines.flow.StateFlow
 
 interface VideoCallService {
     val isAudioMuted: StateFlow<Boolean>
     val isVideoMuted: StateFlow<Boolean>
-    val cameraFace: StateFlow<CameraFace>
+    val cameraFace: StateFlow<CameraLensFacing>
 
     @Composable
     fun ViewContent(modifier: Modifier)
@@ -15,7 +16,7 @@ interface VideoCallService {
     @Composable
     fun PreviewContent(modifier: Modifier)
 
-    fun switchCamera(camera: CameraFace)
+    fun switchCamera(camera: CameraLensFacing)
     fun muteAudio()
     fun muteVideo()
     fun unMuteAudio()

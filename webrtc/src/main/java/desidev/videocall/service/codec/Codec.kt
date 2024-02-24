@@ -1,29 +1,37 @@
 package desidev.videocall.service.codec
 
 import android.media.MediaFormat
+import desidev.videocall.service.codec.Codec.State
 import java.util.concurrent.Future
 
 
-interface Tantra<in inPort : Any, out outPort : Any> {
-    val outPort: outPort
-    fun setInPort(inPort: inPort)
+interface InputScheme<in I : Any> {
+    fun provideInput(input: I)
+}
+
+interface OutputScheme<out O : Any> {
+    fun output(): O
 }
 
 
-interface Codec<in I : Any, out O : Any> : Tantra<I, O> {
+/**
+ * Codec interface to encode/decode the media data.
+ * The codec can be in one of the following states:
+ * [State.UNINITIALIZED], [State.STOPPED], [State.RUNNING], [State.IDLE], [State.RELEASED]
+ */
+interface Codec {
     val state: State
 
     /**
      * Configure the encoder with the given [format]
      * Audio format should contain the sample rate, channel count and encoding.
-     * The encoder will be in [ConfigState.CONFIGURED] state after configuring.
+     * The encoder will be in [State.STOPPED] state after configuring.
      */
     fun configure(format: MediaFormat)
 
-
     /**
      * Start the encoder. Before starting the encoder, it should be configured with [configure] method.
-     * The encoder will start encoding the raw audio buffer and the encoded data will be available in [output] queue.
+     * The encoder will start encoding the raw audio buffer and the encoded data will be provided by the implementing class.
      * The encoder will be in [State.RUNNING] state after starting.
      * The encoder can be stopped by calling [stopEncoder] method.
      */
@@ -58,7 +66,15 @@ interface Codec<in I : Any, out O : Any> : Tantra<I, O> {
         RELEASED
     }
 
-    companion object
+    companion object {
+        fun createAudioEncoder(): AudioEncoder {
+            return AudioEncoder()
+        }
+
+        fun createVideoEncoder(): VideoEncoder {
+            return VideoEncoder()
+        }
+    }
 }
 
 
