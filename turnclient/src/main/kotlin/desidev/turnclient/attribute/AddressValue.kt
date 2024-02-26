@@ -52,7 +52,7 @@ data class AddressValue(
 
     override fun toString(): String {
         val addr = InetAddress.getByAddress(address)
-        return "$addr:$port"
+        return "${addr.hostAddress}:$port"
     }
 
     companion object {

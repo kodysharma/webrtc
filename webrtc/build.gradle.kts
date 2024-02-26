@@ -44,6 +44,7 @@ android {
 }
 
 dependencies {
+    implementation(project(":turnclient"))
     implementation(platform(libs.androidx.compose.bom))
 
     // dependency bundle

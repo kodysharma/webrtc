@@ -4,11 +4,17 @@ import desidev.turnclient.attribute.AddressValue
 import desidev.turnclient.attribute.AttributeType
 import desidev.turnclient.attribute.InetAF
 import desidev.turnclient.message.Message
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.ObsoleteCoroutinesApi
+import kotlinx.coroutines.channels.ticker
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import java.nio.ByteBuffer
 import java.security.MessageDigest
-import java.util.Arrays
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
+import kotlin.time.Duration
 
 
 /**
@@ -79,13 +85,34 @@ fun generateHashCode(input: ByteArray, key: String): ByteArray {
  * then it returns false
  */
 fun checkMessageIntegrity(message: Message, user: String, realm: String, password: String): Boolean {
-    val hash = message.attributes.find { it.type == AttributeType.MESSAGE_INTEGRITY.type }?.getValueAsByteArray()
+    val hash = message.attributes.find{ it.type == AttributeType.MESSAGE_INTEGRITY.type }?.getValueAsByteArray()
     if (hash != null) {
         val msg = Message(
             message.header,
             message.attributes.dropLastWhile { it.type == AttributeType.MESSAGE_INTEGRITY.type })
         val target = generateHashCode(msg.encodeToByteArray(), "$user:$realm:$password")
-        return Arrays.equals(hash, target)
+        return hash.contentEquals(target)
     }
     return false
+}
+
+
+@OptIn(ObsoleteCoroutinesApi::class)
+fun CoroutineScope.countdownTimer(
+    duration: Duration,
+    onTick: suspend (Long) -> Unit,
+    onFinish: (suspend () -> Unit)? = null
+): Job {
+    check(duration.inWholeMilliseconds >= 0) { "Duration must be non-negative" }
+    val tickerChannel = ticker(delayMillis = 1000)
+    return launch {
+        var timeRemaining = duration.inWholeMilliseconds
+        while (isActive && timeRemaining > 0) {
+            tickerChannel.receive()
+            timeRemaining -= 1000
+            onTick(timeRemaining)
+        }
+        tickerChannel.cancel()
+        onFinish?.invoke()
+    }
 }

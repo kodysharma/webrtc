@@ -1,20 +1,24 @@
 package desidev.turnclient
 
-import com.shared.livebaat.turn.message.MessageClass
-import com.shared.livebaat.turn.message.MessageType
 import desidev.turnclient.attribute.AddressValue
 import desidev.turnclient.attribute.AttributeType
 import desidev.turnclient.attribute.TransportProtocol
 import desidev.turnclient.message.Message
+import desidev.turnclient.message.MessageClass
+import desidev.turnclient.message.MessageType
+import desidev.turnclient.util.countdownTimer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.InetAddress
 import java.net.SocketAddress
 import java.net.SocketException
 import java.net.SocketTimeoutException
@@ -23,6 +27,8 @@ import java.util.Collections
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 class TurnClient(
     serverAddress: SocketAddress,
@@ -33,7 +39,8 @@ class TurnClient(
     private val socket: DatagramSocket = DatagramSocket()
     private var realm: String? = null
     private var nonce: String? = null
-    private var allocation: Allocation? = null
+    private var allocation: List<ICECandidate>? = null
+    private var refreshBeforeExpTimeJob: Job? = null
 
     private var inComingPacketHandler = InComingPacketHandler()
     private var numberGenerator = NumberGenerator()
@@ -59,9 +66,12 @@ class TurnClient(
      * Send an allocation request to the server.
      */
     @OptIn(ExperimentalStdlibApi::class)
-    suspend fun requestAllocation(): Result<Allocation> {
+    suspend fun allocation(): Result<List<ICECandidate>> {
         val allocateRequest = Message.buildAllocateRequest(
-            username = user, password = password, realm = realm, nonce = nonce
+            username = user,
+            password = password,
+            realm = realm,
+            nonce = nonce,
         )
 
         return try {
@@ -80,7 +90,8 @@ class TurnClient(
                 })
             }.let { resMsg ->
                 if (resMsg.msgClass == MessageClass.SUCCESS_RESPONSE) {
-                    Result.success(extractAllocateResponse(resMsg).also { this.allocation = it })
+                    updateRefreshJob(lifetime = 600.seconds)
+                    Result.success(parseAllocationResult(resMsg))
                 } else {
                     if (realm == null || nonce == null) {
                         realm = resMsg.attributes.find { it.type == AttributeType.REALM.type }
@@ -89,7 +100,7 @@ class TurnClient(
                             ?.getValueAsString()
 
                         if (realm != null && nonce != null) {
-                            requestAllocation()
+                            allocation()
                         } else {
                             Result.failure(IOException("Message Response does not contain required attributes"))
                         }
@@ -105,19 +116,19 @@ class TurnClient(
 
 
     /**
-     * Create a Channel mapped to the address given.
-     * @param address The address to which new channel is going to bind.
+     * Bind a peer address to a bind channel. This basically opens a way to send/receive messages from/to the peer.
+     * @param peerAddress The address to which new channel is going to bind.
      * @return returns an implementation of ChannelBinding to send/receive the messages
      */
     @OptIn(ExperimentalStdlibApi::class)
-    suspend fun createChannel(address: AddressValue): Result<ChannelBinding> {
+    suspend fun createChannel(peerAddress: AddressValue): Result<ChannelBinding> {
         if (allocation == null) {
             throw IllegalStateException("Cannot add peer address before creating an allocation. Please create an allocation first.")
         }
 
         val channelNo = numberGenerator.getNumber()
         val channelBind =
-            Message.buildChannelBind(channelNo, address, user, password, realm!!, nonce!!)
+            Message.buildChannelBind(channelNo, peerAddress, user, password, realm!!, nonce!!)
 
         println("channel Bind request: \n$channelBind")
 
@@ -138,11 +149,23 @@ class TurnClient(
 
         println("response: \n$response")
 
-        if (response.msgClass == MessageClass.SUCCESS_RESPONSE) {
-            return Result.success(getChannelBindingImpl(address, channelNo))
-        }
+        when (response.msgClass) {
+            MessageClass.SUCCESS_RESPONSE -> {
+                return Result.success(ChannelBindingImpl(peerAddress, channelNo))
+            }
 
-        TODO()
+            MessageClass.ERROR_RESPONSE -> {
+                val errorCode =
+                    response.attributes.find { it.type == AttributeType.ERROR_CODE.type }
+                        ?.getValueAsInt()
+                        ?: throw RuntimeException("Error code not found in response")
+                return Result.failure(IOException("Channel bind request failed with error code: $errorCode"))
+            }
+
+            else -> {
+                return Result.failure(IOException("Unknown error"))
+            }
+        }
     }
 
     private fun sendReqMessage(message: Message, resCb: ResponseCallback) {
@@ -157,48 +180,119 @@ class TurnClient(
         }
     }
 
-    fun refresh() {
-        TODO()
+    // this refreshes the allocation
+    @OptIn(ExperimentalStdlibApi::class)
+    private suspend fun refresh(lifetime: Duration) {
+        check(lifetime.inWholeSeconds >= 0) { "Lifetime should be eq/greater than 0" }
+        if (allocation == null) throw IllegalStateException("Allocation is not created yet")
+        val refreshRequest = Message.buildRefreshRequest(
+            lifetime.inWholeSeconds.toInt(),
+            user,
+            password,
+            realm!!,
+            nonce!!
+        )
+
+        val response: Result<Message> = suspendCancellableCoroutine { cont ->
+            sendReqMessage(refreshRequest, object : ResponseCallback() {
+                override val timeout: Int = REQUEST_TIMEOUT
+                override val transactionId: String = refreshRequest.header.txId.toHexString()
+
+                override fun onResponse(response: Message) {
+                    cont.resume(Result.success(response))
+                }
+
+                override fun onTimeout() {
+                    cont.resume(Result.failure(IOException("Refresh request timed out")))
+                }
+            })
+        }
+
+        if (response.isSuccess) {
+            println("Refresh response: ${response.getOrThrow()}")
+            val message = response.getOrThrow()
+            when (message.msgClass) {
+                MessageClass.SUCCESS_RESPONSE -> {
+                    val lifetimeAttr =
+                        message.attributes.find { it.type == AttributeType.LIFETIME.type }
+                            ?.getValueAsInt()
+                            ?: throw RuntimeException("Expected attribute not found ${AttributeType.LIFETIME.name}")
+
+                    updateRefreshJob(lifetimeAttr.seconds)
+                }
+
+                MessageClass.ERROR_RESPONSE -> {
+                    val errorCode =
+                        message.attributes.find { it.type == AttributeType.ERROR_CODE.type }
+                            ?.getValueAsInt()
+                            ?: throw RuntimeException("Expected attribute not found ${AttributeType.ERROR_CODE.name}")
+                    throw IOException("Refresh request failed with error code: $errorCode")
+                }
+
+                else -> throw IOException("Unknown error")
+            }
+        } else {
+            throw response.exceptionOrNull()!!
+        }
+
     }
 
-    fun close() {
+    suspend fun deAllocate() {
+        refreshBeforeExpTimeJob?.cancel()
+
+        // this closes the turn allocation
+        refresh(0.seconds)
+        allocation = null
+
+        // cancel the handling incoming packets and closes the sockets
         inComingPacketHandler.cancel()
-        inComingPacketHandler.join()
-        numberGenerator.close()
 
-        // TODO: destroy allocation on server
+        withContext(Dispatchers.IO) {
+            inComingPacketHandler.join()
+        }
+
+        numberGenerator.close()
     }
 
-    private fun getChannelBindingImpl(
-        peerAddress: AddressValue,
-        channelNumber: Int
-    ): ChannelBinding {
-        return object : ChannelBinding {
-            override val peerAddress: AddressValue = peerAddress
-            override val channelNumber: Int = channelNumber
-
-            override fun sendMessage(bytes: ByteArray) {
-                sendChannelData(channelNumber, bytes)
+    private fun updateRefreshJob(lifetime: Duration) {
+        refreshBeforeExpTimeJob?.cancel()
+        refreshBeforeExpTimeJob = scope.countdownTimer(
+            duration = lifetime,
+            onTick = {
+                if (it.seconds <= 120.seconds) {
+                    refresh(600.seconds)
+                }
             }
+        )
+    }
 
-            override fun receiveMessage(cb: (ByteArray) -> Unit) {
-                inComingPacketHandler.dataMessageListener[channelNumber] = cb
-            }
+    inner class ChannelBindingImpl(
+        override val peerAddress: AddressValue,
+        override val channelNumber: Int
+    ) : ChannelBinding {
+        override fun sendMessage(bytes: ByteArray) {
+            sendChannelData(channelNumber, bytes)
+        }
 
-            fun sendChannelData(channelNo: Int, data: ByteArray) {
-                val channelData = ByteBuffer.allocate(4 + data.size)
-                channelData.putShort(channelNo.toShort()) // 2 bytes channel number
-                channelData.putShort(data.size.toShort()) // 2 bytes data length
-                channelData.put(data) // application data
+        override fun receiveMessage(cb: IncomingMessage) {
+            inComingPacketHandler.dataMessageListener[channelNumber] = cb
+        }
 
-                val packet = DatagramPacket(channelData.array(), channelData.capacity())
-                socket.send(packet)
-            }
+        private fun sendChannelData(channelNo: Int, data: ByteArray) {
+            val channelData = ByteBuffer.allocate(4 + data.size)
+            channelData.putShort(channelNo.toShort()) // 2 bytes channel number
+            channelData.putShort(data.size.toShort()) // 2 bytes data length
+            channelData.put(data) // application data
+
+            val packet = DatagramPacket(channelData.array(), channelData.capacity())
+            socket.send(packet)
         }
     }
 
-    private fun extractAllocateResponse(response: Message): Allocation {
+
+    private fun parseAllocationResult(response: Message): List<ICECandidate> {
         val attrs = response.attributes
+
         val relayedAddr =
             attrs.find { it.type == AttributeType.XOR_RELAYED_ADDRESS.type }?.getValueAsAddress()
                 ?: throw RuntimeException("Expected attribute not found ${AttributeType.XOR_RELAYED_ADDRESS.name}")
@@ -212,12 +306,41 @@ class TurnClient(
                 "Expected attribute not found ${AttributeType.LIFETIME.name}"
             )
 
-        return Allocation(
-            relayedAddr.xorAddress(),
-            xorMappedAddr.xorAddress(),
-            lifetime,
-            TransportProtocol.UDP
-        )
+        updateRefreshJob(lifetime.seconds)
+
+        val iceCandidates = buildList {
+            val relay = ICECandidate(
+                ip = InetAddress.getByAddress(relayedAddr.xorAddress().address).hostAddress,
+                port = relayedAddr.port,
+                type = ICECandidate.CandidateType.RELAY,
+                protocol = TransportProtocol.UDP,
+                priority = 3
+            )
+
+            val srflx = ICECandidate(
+                ip = InetAddress.getByAddress(xorMappedAddr.xorAddress().address).hostAddress,
+                port = xorMappedAddr.port,
+                type = ICECandidate.CandidateType.SRFLX,
+                protocol = TransportProtocol.UDP,
+                priority = 2
+            )
+
+            val host = ICECandidate(
+                ip = socket.localAddress.hostAddress,
+                port = socket.localPort,
+                type = ICECandidate.CandidateType.HOST,
+                protocol = TransportProtocol.UDP,
+                priority = 1
+            )
+
+            add(relay)
+            add(srflx)
+            add(host)
+        }
+
+        allocation = iceCandidates
+
+        return iceCandidates
     }
 
     private abstract class ResponseCallback {

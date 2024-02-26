@@ -1,15 +1,17 @@
-package desidev.videocall.service
+package desidev.turnclient
 
-class ICECandidate(
+import desidev.turnclient.attribute.TransportProtocol
+
+data class ICECandidate(
     val ip: String,
     val port: Int,
     val type: CandidateType,
     val priority: Long,
+    val protocol: TransportProtocol
 ) {
     enum class CandidateType {
         HOST, // Host Candidate
         SRFLX, // Server Reflexive
-        PRFLX, // Peer Reflexive
         RELAY // Relayed Candidate
     }
 }

@@ -5,10 +5,15 @@ import java.nio.ByteBuffer
 
 /**
  * A generalized stun/turn attribute class.
+ * Each attribute is encoded as a type-length-value (TLV) format.
+ * 2 bytes for type, 2 bytes for length ( a short integer represents the size of value in bytes).
+ * The value is the actual data of the attribute.
+ * The value bytes might be padded to make the total size of the attribute a multiple of 4.
  */
 
 data class StunAttribute(
-    val type: UShort, private val value: ByteArray
+    val type: UShort,
+    private val value: ByteArray
 ) {
     /**
      * returning attribute size includes the size of attribute type length and value.
@@ -39,7 +44,7 @@ data class StunAttribute(
 
     @OptIn(ExperimentalStdlibApi::class)
     override fun toString(): String {
-        val enumType = AttributeType.values().find { it.type == this.type }
+        val enumType = AttributeType.entries.find { it.type == this.type }
         val value: String = when (enumType?.valueType) {
             ValueType.INTEGER -> {
                 val valueInt = getValueAsInt()
@@ -67,9 +72,15 @@ data class StunAttribute(
             ValueType.NOTHING -> {
                 "Nothing"
             }
+
             else -> ""
         }
-        return "${enumType?.name} (0x${String.format("%02x", type.toShort())}), Value: $value, Len: ${this.value.size}"
+        return "${enumType?.name} (0x${
+            String.format(
+                "%02x",
+                type.toShort()
+            )
+        }), Value: $value, Len: ${this.value.size}"
     }
 
     override fun equals(other: Any?): Boolean {

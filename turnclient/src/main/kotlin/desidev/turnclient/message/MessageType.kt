@@ -1,4 +1,4 @@
-package com.shared.livebaat.turn.message
+package desidev.turnclient.message
 
 import java.lang.IllegalArgumentException
 
@@ -11,6 +11,8 @@ enum class MessageType(val type: UShort) {
     // TURN Message Types
     ALLOCATE_REQUEST(0x0003u),
     ALLOCATE_RESPONSE(0x0103u),
+    ALLOCATE_REFRESH_REQUEST(0x0004u),
+    ALLOCATE_REFRESH_RESPONSE(0x0104u),
     ALLOCATE_ERROR_RESPONSE(0x0113u),
 
     // Additional Message Types
@@ -27,11 +29,11 @@ enum class MessageType(val type: UShort) {
 
     companion object {
         fun isValidType(type: UShort): Boolean {
-            return values().any { it.type == type }
+            return entries.any { it.type == type }
         }
 
         fun messageTypeToString(type: UShort): String {
-            return values().find { it.type == type }?.name
+            return entries.find { it.type == type }?.name
                 ?: throw IllegalArgumentException("Unknown message type: $type")
         }
     }

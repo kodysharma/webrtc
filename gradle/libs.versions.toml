@@ -38,6 +38,8 @@ gson = { group = "com.google.code.gson", name = "gson", version = "2.10.1" }
 
 kotlin-stdlib = { group = "org.jetbrains.kotlin", name = "kotlin-stdlib", version.ref = "kotlin" }
 kotlin-reflect = { group = "org.jetbrains.kotlin", name = "kotlin-reflect", version.ref = "kotlin" }
+kotlin-test = { group = "org.jetbrains.kotlin", name = "kotlin-test", version.ref = "kotlin" }
+
 androidx-foundation-layout-android = { group = "androidx.compose.foundation", name = "foundation-layout-android", version.ref = "foundationLayoutAndroid" }
 androidx-core = { group = "androidx.core", name = "core", version.ref = "core" }
 coreLibraryDesugaring = { group = "com.android.tools", name = "desugar_jdk_libs", version = "2.0.4" }

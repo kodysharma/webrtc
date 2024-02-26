@@ -1,4 +1,4 @@
-package com.shared.livebaat.turn.message
+package desidev.turnclient.message
 
 import desidev.turnclient.util.toHexString
 import java.nio.ByteBuffer

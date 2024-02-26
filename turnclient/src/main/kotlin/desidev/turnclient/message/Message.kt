@@ -1,8 +1,5 @@
 package desidev.turnclient.message
 
-import com.shared.livebaat.turn.message.MessageClass
-import com.shared.livebaat.turn.message.MessageHeader
-import com.shared.livebaat.turn.message.MessageType
 import desidev.turnclient.attribute.AddressValue
 import desidev.turnclient.attribute.AttributeType
 import desidev.turnclient.attribute.StunAttribute
@@ -21,7 +18,7 @@ data class Message(
 ) {
     val msgClass by lazy {
         val maskedValue = MESSAGE_CLASS_MASK and header.msgType
-        MessageClass.values().find { it.type == maskedValue }!!
+        MessageClass.entries.find { it.type == maskedValue }!!
     }
 
     init {
@@ -31,7 +28,7 @@ data class Message(
         }
     }
 
-    fun encodeToByteArray(): ByteArray = ByteBuffer.allocate(20 + attributes.paddedSizeInBytes())
+    fun encodeToByteArray(): ByteArray = ByteBuffer.allocate(20 + attributes.sizeInBytes())
         .apply { // ByteBuffer by default uses the big endian byte order.
             // write stun header
             header.writeTo(this)
@@ -85,6 +82,7 @@ data class Message(
     companion object {
         const val MAGIC_COCKIE: Int = 0x2112A442
         const val MESSAGE_CLASS_MASK: UShort = 0x0110u
+
         fun buildAllocateRequest(
             requestedTransport: Int = 0x11000000,
             lifetime: Int = 600,
@@ -98,18 +96,52 @@ data class Message(
             val attributes = mutableListOf<StunAttribute>()
 
             attributes.apply {
-                add(StunAttribute.createStunAttribute(AttributeType.REQUESTED_TRANSPORT.type, requestedTransport))
+                add(
+                    StunAttribute.createStunAttribute(
+                        AttributeType.REQUESTED_TRANSPORT.type,
+                        requestedTransport
+                    )
+                )
                 add(StunAttribute.createStunAttribute(AttributeType.LIFETIME.type, lifetime))
                 if (df) {
-                    add(StunAttribute.createStunAttribute(type = AttributeType.DONT_FRAGMENT.type, ByteArray(0)))
+                    add(
+                        StunAttribute.createStunAttribute(
+                            type = AttributeType.DONT_FRAGMENT.type,
+                            ByteArray(0)
+                        )
+                    )
                 }
-                add(StunAttribute.createStunAttribute(type = AttributeType.SOFTWARE.type, value = software))
-                nonce?.let { add(StunAttribute.createStunAttribute(type = AttributeType.NONCE.type, value = it)) }
-                realm?.let { add(StunAttribute.createStunAttribute(type = AttributeType.REALM.type, value = it)) }
-                add(StunAttribute.createStunAttribute(type = AttributeType.USERNAME.type, value = username))
+                add(
+                    StunAttribute.createStunAttribute(
+                        type = AttributeType.SOFTWARE.type,
+                        value = software
+                    )
+                )
+                nonce?.let {
+                    add(
+                        StunAttribute.createStunAttribute(
+                            type = AttributeType.NONCE.type,
+                            value = it
+                        )
+                    )
+                }
+                realm?.let {
+                    add(
+                        StunAttribute.createStunAttribute(
+                            type = AttributeType.REALM.type,
+                            value = it
+                        )
+                    )
+                }
+                add(
+                    StunAttribute.createStunAttribute(
+                        type = AttributeType.USERNAME.type,
+                        value = username
+                    )
+                )
             }
 
-            val attributesSize = attributes.paddedSizeInBytes()
+            val attributesSize = attributes.sizeInBytes()
             val messageLength = attributesSize + if (realm != null) 24 else 0
             val header = MessageHeader(
                 MessageType.ALLOCATE_REQUEST.type,
@@ -121,7 +153,8 @@ data class Message(
             if (realm != null) {
                 val msg = Message(header, attributes)
                 val messageBytes = msg.encodeToByteArray()
-                val hash = generateHashCode(input = messageBytes, key = "$username:$realm:$password")
+                val hash =
+                    generateHashCode(input = messageBytes, key = "$username:$realm:$password")
                 attributes.add(
                     StunAttribute.createStunAttribute(
                         type = AttributeType.MESSAGE_INTEGRITY.type, value = hash
@@ -142,32 +175,80 @@ data class Message(
          * This also adds the message integrity attribute in the end of the message.
          */
         fun buildChannelBind(
-            channelNumber: Int, peerAddress: AddressValue, user: String, password: String, realm: String, nonce: String
+            channelNumber: Int,
+            peerAddress: AddressValue,
+            user: String,
+            password: String,
+            realm: String,
+            nonce: String
         ): Message {
             val channelNumAttr = StunAttribute.createStunAttribute(
                 AttributeType.CHANNEL_NUMBER.type,
                 value = channelNumber.toShort() // channel number is of 2 bytes.
             )
-            val userAttr = StunAttribute.createStunAttribute(AttributeType.USERNAME.type, value = user)
-            val realmAttr = StunAttribute.createStunAttribute(AttributeType.REALM.type, value = realm)
-            val nonceAttr = StunAttribute.createStunAttribute(AttributeType.NONCE.type, value = nonce)
-            val peerAddressAttr = StunAttribute.createStunAttribute(AttributeType.XOR_PEER_ADDRESS.type, peerAddress.xorAddress())
+            val userAttr =
+                StunAttribute.createStunAttribute(AttributeType.USERNAME.type, value = user)
+            val realmAttr =
+                StunAttribute.createStunAttribute(AttributeType.REALM.type, value = realm)
+            val nonceAttr =
+                StunAttribute.createStunAttribute(AttributeType.NONCE.type, value = nonce)
+            val peerAddressAttr = StunAttribute.createStunAttribute(
+                AttributeType.XOR_PEER_ADDRESS.type,
+                peerAddress.xorAddress()
+            )
 
-            val attrs = listOf(channelNumAttr,peerAddressAttr, userAttr, realmAttr, nonceAttr)
+            val attrs = listOf(channelNumAttr, peerAddressAttr, userAttr, realmAttr, nonceAttr)
             val hdr = MessageHeader(
-                MessageType.CHANNEL_BIND_REQ.type, generateTransactionId(), MAGIC_COCKIE, attrs.paddedSizeInBytes() + 24
+                MessageType.CHANNEL_BIND_REQ.type,
+                generateTransactionId(),
+                MAGIC_COCKIE,
+                attrs.sizeInBytes() + 24 // length of attributes + last 24 bytes for message integrity attribute
             )
 
             val msg = Message(hdr, attrs)
 
             val key = "$user:$realm:$password"
             val msgIntegrityAttr = StunAttribute.createStunAttribute(
-                type = AttributeType.MESSAGE_INTEGRITY.type, value = generateHashCode(msg.encodeToByteArray(), key)
+                type = AttributeType.MESSAGE_INTEGRITY.type,
+                value = generateHashCode(msg.encodeToByteArray(), key)
             )
 
             val attributes = attrs + listOf(msgIntegrityAttr)
 
             return msg.copy(attributes = attributes)
+        }
+
+        fun buildRefreshRequest(
+            lifetime: Int,
+            username: String,
+            password: String,
+            realm: String,
+            nonce: String
+        ): Message {
+            val attributes = buildList {
+                add(StunAttribute.createStunAttribute(AttributeType.LIFETIME.type, lifetime))
+                add(StunAttribute.createStunAttribute(AttributeType.USERNAME.type, username))
+                add(StunAttribute.createStunAttribute(AttributeType.REALM.type, realm))
+                add(StunAttribute.createStunAttribute(AttributeType.NONCE.type, nonce))
+            }
+
+            val header = MessageHeader(
+                MessageType.ALLOCATE_REFRESH_REQUEST.type,
+                generateTransactionId(),
+                MAGIC_COCKIE,
+                attributes.sizeInBytes() + 24 // length of attributes + last 24 bytes for message integrity attribute
+            )
+
+            val msg = Message(header, attributes)
+            val key = "$username:$realm:$password"
+            val hash = generateHashCode(msg.encodeToByteArray(), key)
+            val msgIntegrityAttr = StunAttribute.createStunAttribute(
+                type = AttributeType.MESSAGE_INTEGRITY.type,
+                value = hash
+            )
+            val newAttributes = attributes + listOf(msgIntegrityAttr)
+            val newMsg = msg.copy(attributes = newAttributes)
+            return newMsg
         }
 
         fun parse(byteArray: ByteArray): Message {
@@ -217,7 +298,7 @@ data class Message(
 }
 
 /**
- * Attribute padded size in bytes.
+ * Total attributes size in bytes. Each attribute is padded to be a multiple of 4 bytes.
  */
-fun List<StunAttribute>.paddedSizeInBytes(): Int =
+fun List<StunAttribute>.sizeInBytes(): Int =
     fold(0) { size, attribute -> size + multipleOfFour(attribute.sizeInBytes) }

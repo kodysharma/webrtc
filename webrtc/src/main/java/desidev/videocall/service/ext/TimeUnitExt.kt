@@ -10,7 +10,6 @@ fun MicroSeconds.toMilliSec(): MilliSeconds = MilliSeconds(value * 0.001)
 fun NanoSeconds.toMicroSec(): MicroSeconds = MicroSeconds(value * 0.001)
 fun MicroSeconds.toNanoSec(): NanoSeconds = NanoSeconds(value * 1000.0)
 
-
 val Number.asMilliSec get() = MilliSeconds(this.toDouble())
 val Number.asMicroSec get() = MicroSeconds(this.toDouble())
 val Number.asNanoSec get() = NanoSeconds(this.toDouble())
