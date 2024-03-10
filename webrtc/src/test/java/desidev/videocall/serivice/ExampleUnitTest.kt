@@ -1,6 +1,9 @@
 package desidev.videocall.serivice
 
-import org.junit.Assert.assertEquals
+import desidev.videocall.service.ConditionAwait
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import org.junit.Test
 
 /**
@@ -9,8 +12,22 @@ import org.junit.Test
  * See [testing documentation](http://d.android.com/tools/testing).
  */
 class ExampleUnitTest {
+
     @Test
-    fun addition_isCorrect() {
-        assertEquals(4, 2 + 2)
+    fun conditionAwaitTest() {
+        val conditionAwait = ConditionAwait(false)
+
+
+        runBlocking {
+            repeat(10) {
+                launch {
+                    conditionAwait.await()
+                    println("Condition is true $it")
+                }
+            }
+
+            delay(5000)
+            conditionAwait.update(true)
+        }
     }
 }

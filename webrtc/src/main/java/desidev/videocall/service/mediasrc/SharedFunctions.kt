@@ -8,7 +8,7 @@ import kotlin.reflect.jvm.isAccessible
 
 fun stringyFyMediaFormat(mediaFormat: MediaFormat): String {
     return try {
-        val gson = GsonBuilder().setPrettyPrinting().serializeNulls().create()
+        val gson = GsonBuilder().setPrettyPrinting().create()
         MediaFormat::class.declaredFunctions.find {
             it.name == "getMap"
         }?.apply { isAccessible = true }?.call(mediaFormat)?.let { mediaData ->

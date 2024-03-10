@@ -14,6 +14,7 @@ enum class ValueType {
     STRING,
     XOR_ADDR,
     ByteArray,
+    Error,
     NOTHING
 }
 
@@ -31,7 +32,7 @@ enum class AttributeType(val type: UShort, val valueType: ValueType) {
 //    SECONDARY_ADDRESS(0x0050u, ValueType.Xor_Address),
 
     // Error Attributes
-    ERROR_CODE(0x0009u, ValueType.STRING),
+    ERROR_CODE(0x0009u, ValueType.Error),
     UNKNOWN_ATTRIBUTES(0x000au, ValueType.ByteArray),
 
     //    ERROR_REASON(0x000Cu, ValueType.STRING),

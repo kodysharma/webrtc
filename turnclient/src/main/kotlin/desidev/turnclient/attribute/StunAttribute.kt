@@ -8,12 +8,11 @@ import java.nio.ByteBuffer
  * Each attribute is encoded as a type-length-value (TLV) format.
  * 2 bytes for type, 2 bytes for length ( a short integer represents the size of value in bytes).
  * The value is the actual data of the attribute.
- * The value bytes might be padded to make the total size of the attribute a multiple of 4.
  */
 
 data class StunAttribute(
     val type: UShort,
-    private val value: ByteArray
+    private val value: ByteArray // not padded to be a multiple of 4 bytes.
 ) {
     /**
      * returning attribute size includes the size of attribute type length and value.
@@ -29,10 +28,15 @@ data class StunAttribute(
         return value.decodeToString()
     }
 
+
     fun getValueAsByteArray(): ByteArray = this.value
 
     fun getValueAsAddress(): AddressValue {
         return AddressValue.from(value)
+    }
+
+    fun getAsErrorValue(): ErrorValue {
+        return ErrorValue.from(value)
     }
 
     fun writeTo(buffer: ByteBuffer) {
@@ -67,6 +71,10 @@ data class StunAttribute(
 
             ValueType.ByteArray -> {
                 this.value.toHexString()
+            }
+
+            ValueType.Error -> {
+                getAsErrorValue().toString()
             }
 
             ValueType.NOTHING -> {

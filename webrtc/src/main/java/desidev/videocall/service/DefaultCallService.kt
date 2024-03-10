@@ -22,66 +22,58 @@ import desidev.turnclient.attribute.AddressValue
 import desidev.videocall.service.CallService.State
 import desidev.videocall.service.camera.CameraCapture
 import desidev.videocall.service.camera.CameraLensFacing
-import desidev.videocall.service.message.VideoSample
-import desidev.videocall.service.message.serializeMessage
 import desidev.videocall.service.signal.Signal
+import desidev.videocall.service.signal.SignalEvent
 import desidev.videocall.service.yuv.YuvToRgbConverter
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.trySendBlocking
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withTimeout
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.util.UUID
-import kotlin.coroutines.resume
-import kotlin.coroutines.suspendCoroutine
 import kotlin.time.Duration.Companion.seconds
 
 
-/**
- * This is the default implementation of [CallService].
- *
- * ```
- * // Get the default implementation of [VideoCallService]
- * val videoCallService = VideoCallService.getDefault()
- * ```
- */
-class DefaultVideoCallService<P : Any> internal constructor(
+class DefaultCallService<P : Any>(
     context: Context,
-    private val _signal: Signal<P>,
+    signal: Signal<P>,
     username: String,
     password: String,
     turnIp: String,
     turnPort: Int,
 ) : CallService<P> {
-    private val _scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private val _turn = TurnClient(InetSocketAddress(turnIp, turnPort), username, password)
+    private val signal = signal
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val turn = TurnClient(InetSocketAddress(turnIp, turnPort), username, password)
     private val _yuvToRgbConverter = YuvToRgbConverter(context)
     private val _cameraCapture: CameraCapture = CameraCapture.create(context)
     private val _stateLock = Mutex()
     private val _serviceState = MutableStateFlow<State>(State.Idle)
 
     private val _coroutineExceptionHandler = CoroutineExceptionHandler { _, throwable ->
-        _scope.launch {
+        scope.launch {
             _stateLock.withLock {
                 _serviceState.value = State.Error("Error: ${throwable.message}", throwable)
             }
         }
     }
-    private var _sessionJob: Job? = null
+
+    private val handler = ServiceHandle(scope)
+
+    private var receivedOffer: Offer<P>? = null
 
     override val cameraFace: StateFlow<CameraLensFacing>
         get() = TODO("Not yet implemented")
@@ -100,39 +92,29 @@ class DefaultVideoCallService<P : Any> internal constructor(
 
     override val serviceState = _serviceState
 
-    private var _outgoingCall: Offer<P>? = null
-    private var _incomingCall: Offer<P>? = null
-
     init {
-        val cond = ConditionAwait(serviceState.value == State.Idle)
-        _scope.launch {
-            while (isActive) {
-                _incomingCall = _signal.incomingOffer.first()
-                cond.await()
-                handleCallReceive(_incomingCall!!)
-            }
+        scope.launch {
+            signal.signalFlow.collect {
+                when (it) {
+                    is SignalEvent.OfferEvent<*> -> {
+                        Log.d(TAG, "Received offer")
+                        handler.sendEvent(Event.OnOfferReceived(it.offer))
+                    }
 
-        }
+                    is SignalEvent.AnswerEvent -> {
+                        Log.d(TAG, "Received answer")
+                        handler.sendEvent(Event.OnAnswerReceived(it.answer))
+                    }
 
-        _scope.launch {
-            serviceState.collect {
-                cond.update(it == State.Idle)
-            }
-        }
-    }
+                    is SignalEvent.CancelOfferEvent -> {
+                        Log.d(TAG, "Received cancel offer")
+                        handler.sendEvent(Event.OnReceivedOfferCancel)
+                    }
 
-
-    private suspend fun handleCallReceive(call: Offer<P>) {
-        val timeout = with(call) { expiryTime - System.currentTimeMillis() }
-        if (timeout > 0) {
-            _stateLock.withLock {
-                _serviceState.value = State.Ringing
-                delay(timeout)
-            }
-
-            _stateLock.withLock {
-                if (serviceState.value == State.Ringing) {
-                    _serviceState.value = State.Idle
+                    is SignalEvent.SessionCloseEvent -> {
+                        Log.d(TAG, "Received session close")
+                        handler.sendEvent(Event.OnSessionClose)
+                    }
                 }
             }
         }
@@ -181,13 +163,12 @@ class DefaultVideoCallService<P : Any> internal constructor(
     }
 
     override fun switchCamera() {
-        _scope.launch {
+        scope.launch {
             val lensFacing =
                 if (cameraFace.value == CameraLensFacing.FRONT) CameraLensFacing.BACK else CameraLensFacing.FRONT
             _cameraCapture.selectCamera(lensFacing)
         }
     }
-
 
     override suspend fun openCamera() {
 //        _cameraCapture.start()
@@ -197,146 +178,28 @@ class DefaultVideoCallService<P : Any> internal constructor(
 //        _cameraCapture.stop()
     }
 
-
     override fun call(callee: P) {
-        _scope.launch(_coroutineExceptionHandler) {
-            _stateLock.withLock {
-                val allocationResult = _turn.allocation()
-                if (allocationResult.isFailure) {
-                    _serviceState.value = State.Error(
-                        "Error: ${allocationResult.exceptionOrNull()?.message}",
-                        allocationResult.exceptionOrNull()!!
-                    )
-                    return@launch
-                }
-
-                _cameraCapture.start()
-                val videoFormat = _cameraCapture.getMediaFormat().get()
-
-                _outgoingCall = Offer(
-                    id = UUID.randomUUID().toString(),
-                    peer = callee,
-                    candidates = allocationResult.getOrThrow(),
-                    mediaFormat = listOf(videoFormat),
-                    timestamp = System.currentTimeMillis(),
-                    expiryTime = System.currentTimeMillis() + offerTimeout.inWholeMilliseconds
-                )
-
-                _serviceState.value = State.Calling
-                _signal.sendOffer(_outgoingCall!!)
-            }
-
-            try {
-                val answer = withTimeout(offerTimeout) {
-                    _signal.incomingAnswer.first { it.id == _outgoingCall!!.id }
-                }
-
-                _stateLock.withLock {
-                    if (answer.accepted) {
-                        startSession(answer.candidates)
-                    } else {
-                        _serviceState.value = State.Idle
-                        _cameraCapture.stop()
-                    }
-                }
-
-            } catch (ex: TimeoutCancellationException) {
-                _stateLock.withLock {
-                    _serviceState.value = State.Idle
-                    _signal.cancelOffer(_outgoingCall!!)
-                }
-                return@launch
-            }
-        }
+        handler.sendEvent(
+            Event.MakeCall(callee)
+        )
     }
 
-
     override fun cancel() {
-        _scope.launch(_coroutineExceptionHandler) {
-            _stateLock.withLock {
-                when (serviceState.value) {
-                    is State.Ringing -> {
-                        _serviceState.value = State.Idle
-                        _signal.sendAnswer(
-                            Answer(
-                                id = _incomingCall!!.id,
-                                accepted = false,
-                                mediaFormat = emptyList(),
-                                candidates = emptyList()
-                            )
-                        )
-
-                        _cameraCapture.stop()
-                    }
-
-                    is State.Calling -> {
-                        _cameraCapture.stop()
-                        _serviceState.value = State.Idle
-                        _turn.deleteAllocation()
-                        _signal.cancelOffer(_outgoingCall!!)
-                    }
-
-                    is State.InCall -> {
-                        _cameraCapture.stop()
-                        _serviceState.value = State.Idle
-                        _turn.deleteAllocation()
-                        _signal.cancelSession()
-                    }
-
-                    else -> {
-                        Log.e(TAG, "Error: Invalid state")
-                    }
-                }
-            }
+        val event = when (serviceState.value) {
+            is State.Calling -> Event.CancelOutgoingOffer
+            is State.Ringing -> Event.RejectOffer
+            is State.InCall -> Event.CloseSession
+            else -> throw IllegalStateException()
         }
+        handler.sendEvent(event)
     }
 
     override fun accept() {
-        _scope.launch {
-            _stateLock.withLock {
-                if (serviceState.value is State.Ringing) {
-                    val allocationResult = _turn.allocation()
-                    if (allocationResult.isFailure) {
-                        _serviceState.value = State.Error(
-                            "Error: ${allocationResult.exceptionOrNull()?.message}",
-                            allocationResult.exceptionOrNull()!!
-                        )
-                        return@launch
-                    }
-
-                    _cameraCapture.start()
-                    val videoFormat = _cameraCapture.getMediaFormat().get()
-
-                    val answer = Answer(
-                        id = _incomingCall!!.id,
-                        accepted = true,
-                        mediaFormat = listOf(videoFormat),
-                        candidates = allocationResult.getOrThrow()
-                    )
-
-                    _signal.sendAnswer(answer)
-                    startSession(_incomingCall!!.candidates)
-                    _serviceState.value = State.InCall
-                }
-            }
-        }
+        handler.sendEvent(Event.AcceptOffer)
     }
 
     override fun dispose() {
-        _scope.launch {
-            _stateLock.withLock {
-                if (serviceState.value is State.Idle && serviceState.value is State.Error) {
-                    _cameraCapture.release()
-                    _scope.cancel()
-                    _serviceState.value = State.Disposed
-                    _turn.deleteAllocation()
-                } else {
-                    Log.e(TAG, "Error: Invalid state")
-                }
-            }
-        }
     }
-
 
     private suspend fun startSession(peerICECandidate: List<ICECandidate>) {
         val relay = peerICECandidate.find { it.type == CandidateType.RELAY }
@@ -345,29 +208,19 @@ class DefaultVideoCallService<P : Any> internal constructor(
         val transportAddress =
             AddressValue.from(InetAddress.getByName(relay.ip), relay.port)
 
-        _turn.createChannel(transportAddress).let { bindingResult ->
+        turn.createChannel(transportAddress).let { bindingResult ->
             if (bindingResult.isSuccess) {
                 val dataChannel = bindingResult.getOrThrow()
-
                 // callback function to receive messages from the remote peer
                 dataChannel.receiveMessage { bytes ->
-                    Log.d(TAG, "on message received: ${bytes.size}")
+                    Log.d(TAG, "on message received: ${bytes.decodeToString()} ")
                 }
 
-                // send the camera frames to the remote peer
-                _cameraCapture.compressedDataChannel().let {
-                    while (it.isOpenForReceive) {
-                        try {
-                            val data = it.receive()
-                            val sample = VideoSample(
-                                data.second.presentationTimeUs,
-                                data.second.flags,
-                                data.first
-                            )
-                            dataChannel.sendMessage(serializeMessage(sample))
-                        } catch (ex: Exception) {
-                            Log.e(TAG, "Error: ${ex.message}")
-                        }
+                coroutineScope {
+                    var packetCount = 0
+                    while (isActive) {
+                        delay(100)
+                        dataChannel.sendMessage("${packetCount++}".encodeToByteArray())
                     }
                 }
 
@@ -382,34 +235,130 @@ class DefaultVideoCallService<P : Any> internal constructor(
     }
 
     companion object {
-        val TAG = DefaultVideoCallService::class.simpleName
+        val TAG = DefaultCallService::class.simpleName
         val offerTimeout = 10.seconds
     }
-}
 
-typealias ConditionCallback = () -> Unit
+    sealed interface Event {
+        data class MakeCall<P : Any>(val callee: P) : Event
+        data object AcceptOffer : Event
+        data object CancelOutgoingOffer : Event
+        data object CloseSession : Event
+        data class OnOfferReceived<P>(val offer: Offer<P>) : Event
+        data class OnAnswerReceived(val answer: Answer) : Event
+        data object OnSessionClose : Event
+        data object RejectOffer : Event
 
-class ConditionAwait(initialValue: Boolean) {
-    private var _condition: Boolean = initialValue
-    private var callback = mutableListOf<ConditionCallback>()
-    private val _mutex1 = Mutex()
-    fun update(booleanValue: Boolean) {
-        synchronized(this) {
-            _condition = booleanValue
-            if (_condition) {
-                callback.forEach { it() }
-                callback.clear()
-            }
-        }
+        data object OnReceivedOfferCancel : Event
     }
 
-    suspend fun await() {
-        _mutex1.withLock {
-            if (!_condition) {
-                coroutineScope {
-                    suspendCoroutine { cont ->
-                        callback.add {
-                            cont.resume(Unit)
+    inner class ServiceHandle(scope: CoroutineScope) {
+        private val eventQueue = Channel<Event>(Channel.BUFFERED)
+        private var rtcTask: Job? = null
+
+        init {
+            scope.loop()
+        }
+
+        fun sendEvent(event: Event) {
+            eventQueue.trySendBlocking(event)
+        }
+
+        private fun CoroutineScope.loop() = launch {
+            for (event in eventQueue) {
+                when (event) {
+                    is Event.MakeCall<*> -> {
+                        if (serviceState.value != State.Idle) return@launch
+
+                        val allocationResult = turn.createAllocation()
+                        if (allocationResult.isSuccess) {
+                            val offer = Offer(
+                                id = UUID.randomUUID().toString(),
+                                peer = event.callee,
+                                candidates = allocationResult.getOrThrow(),
+                                timestamp = System.currentTimeMillis(),
+                                expiryTime = System.currentTimeMillis() + offerTimeout.inWholeMilliseconds
+                            )
+                            signal.sendOffer(offer as Offer<P>)
+                            _serviceState.value = State.Calling
+                        }
+                    }
+
+                    Event.CancelOutgoingOffer -> {
+                        if (serviceState.value !is State.Calling) return@launch
+                        signal.cancelOffer()
+                        turn.deleteAllocation()
+                        _serviceState.value = State.Idle
+                    }
+
+                    is Event.AcceptOffer -> {
+                        // accept the incoming call offer
+                        if (serviceState.value !is State.Ringing) return@launch
+                        val allocationResult = turn.createAllocation()
+                        if (allocationResult.isSuccess) {
+                            val answer = Answer(
+                                id = receivedOffer!!.id,
+                                accepted = true,
+                                candidates = allocationResult.getOrThrow()
+                            )
+                            signal.sendAnswer(answer)
+                            rtcTask = launch { startSession(receivedOffer!!.candidates) }
+                            _serviceState.value = State.InCall
+                        }
+                    }
+
+                    is Event.RejectOffer -> {
+                        if (serviceState.value !is State.Ringing) return@launch
+                        signal.sendAnswer(
+                            Answer(
+                                id = receivedOffer!!.id,
+                                accepted = false,
+                                candidates = emptyList()
+                            )
+                        )
+                        _serviceState.value = State.Idle
+                    }
+
+                    Event.CloseSession -> {
+                        if (serviceState.value !is State.InCall) return@launch
+                        turn.deleteAllocation()
+                        signal.cancelSession()
+                        rtcTask?.cancel("RTC task cancelled")
+                        _serviceState.value = State.Idle
+                    }
+
+                    is Event.OnAnswerReceived -> {
+                        if (serviceState.value !is State.Calling) return@launch
+                        val answer = event.answer
+                        if (answer.accepted) {
+                            rtcTask = launch { startSession(answer.candidates) }
+                            _serviceState.value = State.InCall
+                        } else {
+                            _serviceState.value = State.Idle
+                        }
+                    }
+
+                    is Event.OnOfferReceived<*> -> {
+                        if (serviceState.value !is State.Idle) return@launch
+                        receivedOffer = event.offer as Offer<P>
+                        _serviceState.value = State.Ringing
+                    }
+
+                    Event.OnReceivedOfferCancel -> {
+                        if (serviceState.value is State.Ringing) {
+                            _serviceState.value = State.Idle
+                        } else if (serviceState.value is State.InCall) {
+                            turn.deleteAllocation()
+                            rtcTask?.cancel("RTC task cancelled")
+                            _serviceState.value = State.Idle
+                        }
+                    }
+
+                    is Event.OnSessionClose -> {
+                        if (serviceState.value is State.InCall) {
+                            turn.deleteAllocation()
+                            rtcTask?.cancel("RTC task cancelled")
+                            _serviceState.value = State.Idle
                         }
                     }
                 }
@@ -417,3 +366,5 @@ class ConditionAwait(initialValue: Boolean) {
         }
     }
 }
+
+

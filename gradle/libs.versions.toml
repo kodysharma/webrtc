@@ -1,5 +1,5 @@
 [versions]
-agp = "8.4.0-alpha09"
+agp = "8.2.2"
 kotlin = "1.9.22"
 kotlinCompilerExtensionVersion = "1.5.9"
 coreKtx = "1.12.0"
@@ -44,6 +44,7 @@ androidx-foundation-layout-android = { group = "androidx.compose.foundation", na
 androidx-core = { group = "androidx.core", name = "core", version.ref = "core" }
 coreLibraryDesugaring = { group = "com.android.tools", name = "desugar_jdk_libs", version = "2.0.4" }
 
+
 [bundles]
 # webrtc module uses the following compose dependencies
 webrtc-dep-bundle = [
@@ -58,6 +59,7 @@ webrtc-dep-bundle = [
     "androidx-core-ktx",
     "gson"
 ]
+
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

@@ -1,8 +1,5 @@
 package desidev.videocall.service.message
 
-import desidev.videocall.service.message.Message
-import desidev.videocall.service.message.SymbolId
-
 @SymbolId(4)
 data class VideoSample(
     @property:SymbolId(1) val timeStamp: Long,

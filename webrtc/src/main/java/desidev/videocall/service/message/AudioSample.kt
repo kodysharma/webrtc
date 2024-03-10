@@ -1,8 +1,5 @@
 package desidev.videocall.service.message
 
-import desidev.videocall.service.message.Message
-import desidev.videocall.service.message.SymbolId
-
 @SymbolId(2)
 data class AudioSample(
     @property:SymbolId(1) val timeStampUs: Long,
@@ -28,5 +25,4 @@ data class AudioSample(
         result = 31 * result + sample.contentHashCode()
         return result
     }
-
 }

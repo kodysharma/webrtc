@@ -3,6 +3,7 @@ package desidev.turnclient.message
 import desidev.turnclient.attribute.AddressValue
 import desidev.turnclient.attribute.AttributeType
 import desidev.turnclient.attribute.StunAttribute
+import desidev.turnclient.attribute.TransportProtocol
 import desidev.turnclient.util.generateHashCode
 import desidev.turnclient.util.multipleOfFour
 import java.nio.ByteBuffer
@@ -42,14 +43,10 @@ data class Message(
 
     override fun toString(): String {
         val stringBuilder = StringBuilder()
-//        stringBuilder.append("Message Header:\n")
         stringBuilder.append(header.toString())
-        stringBuilder.append("\n")
-
-//        stringBuilder.append("Attributes:\n")
         attributes.forEach { attribute ->
-            stringBuilder.append(attribute.toString())
             stringBuilder.append("\n")
+            stringBuilder.append(attribute.toString())
         }
 
         return stringBuilder.toString()
@@ -83,8 +80,9 @@ data class Message(
         const val MAGIC_COCKIE: Int = 0x2112A442
         const val MESSAGE_CLASS_MASK: UShort = 0x0110u
 
+
         fun buildAllocateRequest(
-            requestedTransport: Int = 0x11000000,
+            requestedTransport: Int = TransportProtocol.UDP.code,
             lifetime: Int = 600,
             df: Boolean = true,
             software: String = "ns.turn.client version 1.0",
@@ -153,8 +151,7 @@ data class Message(
             if (realm != null) {
                 val msg = Message(header, attributes)
                 val messageBytes = msg.encodeToByteArray()
-                val hash =
-                    generateHashCode(input = messageBytes, key = "$username:$realm:$password")
+                val hash = generateHashCode(input = messageBytes, key = "$username:$realm:$password")
                 attributes.add(
                     StunAttribute.createStunAttribute(
                         type = AttributeType.MESSAGE_INTEGRITY.type, value = hash
@@ -186,12 +183,9 @@ data class Message(
                 AttributeType.CHANNEL_NUMBER.type,
                 value = channelNumber.toShort() // channel number is of 2 bytes.
             )
-            val userAttr =
-                StunAttribute.createStunAttribute(AttributeType.USERNAME.type, value = user)
-            val realmAttr =
-                StunAttribute.createStunAttribute(AttributeType.REALM.type, value = realm)
-            val nonceAttr =
-                StunAttribute.createStunAttribute(AttributeType.NONCE.type, value = nonce)
+            val userAttr = StunAttribute.createStunAttribute(AttributeType.USERNAME.type, value = user)
+            val realmAttr = StunAttribute.createStunAttribute(AttributeType.REALM.type, value = realm)
+            val nonceAttr = StunAttribute.createStunAttribute(AttributeType.NONCE.type, value = nonce)
             val peerAddressAttr = StunAttribute.createStunAttribute(
                 AttributeType.XOR_PEER_ADDRESS.type,
                 peerAddress.xorAddress()
@@ -288,7 +282,7 @@ data class Message(
             return attributes
         }
 
-        private fun generateTransactionId(): ByteArray {
+        fun generateTransactionId(): ByteArray {
             val random = SecureRandom()
             val transactionId = ByteArray(12)
             random.nextBytes(transactionId)
@@ -300,5 +294,4 @@ data class Message(
 /**
  * Total attributes size in bytes. Each attribute is padded to be a multiple of 4 bytes.
  */
-fun List<StunAttribute>.sizeInBytes(): Int =
-    fold(0) { size, attribute -> size + multipleOfFour(attribute.sizeInBytes) }
+fun List<StunAttribute>.sizeInBytes(): Int = fold(0) { size, attribute -> size + multipleOfFour(attribute.sizeInBytes) }

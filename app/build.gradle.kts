@@ -52,6 +52,9 @@ android {
 }
 
 dependencies {
+//    implementation("desidev.rpc.client:rpc-client:1.0")
+
+    implementation("androidx.constraintlayout:constraintlayout-compose:1.0.1")
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
@@ -68,10 +71,16 @@ dependencies {
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
 
+    val ktor_version = "2.3.8"
+    val logback_version = "1.2.11"
+    implementation("io.ktor:ktor-client-websockets:$ktor_version")
+    implementation ("io.ktor:ktor-client-core:$ktor_version")
+    implementation ("io.ktor:ktor-client-cio:$ktor_version")
+    implementation("ch.qos.logback:logback-classic:$logback_version")
+    implementation("io.ktor:ktor-client-content-negotiation:$ktor_version")
+    implementation("io.ktor:ktor-serialization-gson:$ktor_version")
     implementation(libs.kotlinx.coroutines.core)
-
     implementation(libs.gson)
-
     implementation(project(":webrtc"))
 
     coreLibraryDesugaring(libs.coreLibraryDesugaring)
