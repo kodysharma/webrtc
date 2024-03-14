@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package desidev.rtc.message;
+
+message RtcMessage {
+  oneof message {
+    Format format = 1;
+    Sample sample = 2;
+  }
+}
+
+message Format {
+  map<string, Value> map = 1;
+  message Value {
+    oneof type {
+      double double_value = 1;
+      float float_value = 2;
+      int64 int64_value = 3;
+      uint64 uint64_value = 4;
+      int32 int32_value = 5;
+      bool bool_value = 6;
+      string string_value = 7;
+    }
+  }
+}
+
+
+message Sample {
+  oneof sample {
+    AudioSample audio = 1;
+    VideoSample video = 2;
+  }
+
+  message AudioSample {
+    bytes data = 1;
+  }
+
+  message VideoSample {
+    bytes data = 1;
+  }
+}

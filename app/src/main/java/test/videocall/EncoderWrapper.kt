@@ -6,11 +6,11 @@ import android.media.MediaFormat
 import android.os.Environment
 import android.util.Log
 import android.view.Surface
-import desidev.videocall.service.ext.asMicroSec
-import desidev.videocall.service.ext.asNanoSec
-import desidev.videocall.service.ext.minus
-import desidev.videocall.service.ext.plusAssign
-import desidev.videocall.service.ext.toMicroSec
+import desidev.utility.asMicroSec
+import desidev.utility.asNanoSec
+import desidev.utility.minus
+import desidev.utility.plusAssign
+import desidev.utility.toMicroSec
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel

@@ -159,9 +159,13 @@ fun deserializeMessage(messageBytes: ByteArray, refSize: Int = 4): Message {
             1 + 3 * refSize
         }
 
-        FormatAccept::class.findAnnotation<SymbolId>()!!.id -> {
-            1
-        }
+
+        AudioFormatAck::class.findAnnotation<SymbolId>()!!.id,
+        VideoFormatAck::class.findAnnotation<SymbolId>()!!.id,
+        AudioStreamDisAck::class.findAnnotation<SymbolId>()!!.id,
+        VideoStreamDisAck::class.findAnnotation<SymbolId>()!!.id,
+        AudioStreamDis::class.findAnnotation<SymbolId>()!!.id,
+        VideoStreamDis::class.findAnnotation<SymbolId>()!!.id -> 1
 
         else -> throw IllegalArgumentException("Not a Valid Message!")
     }
@@ -331,9 +335,12 @@ fun deserializeMessage(messageBytes: ByteArray, refSize: Int = 4): Message {
             )
         }
 
-        FormatAccept::class.findAnnotation<SymbolId>()!!.id -> {
-            FormatAccept
-        }
+        VideoStreamDis::class.findAnnotation<SymbolId>()!!.id -> VideoStreamDis()
+        AudioStreamDis::class.findAnnotation<SymbolId>()!!.id -> AudioStreamDis()
+        VideoStreamDisAck::class.findAnnotation<SymbolId>()!!.id -> VideoStreamDisAck()
+        AudioStreamDisAck::class.findAnnotation<SymbolId>()!!.id -> AudioStreamDisAck()
+        AudioFormatAck::class.findAnnotation<SymbolId>()!!.id -> AudioFormatAck()
+        VideoFormatAck::class.findAnnotation<SymbolId>()!!.id -> VideoFormatAck()
 
         else -> throw IllegalArgumentException("Input bytes not a valid message")
     }

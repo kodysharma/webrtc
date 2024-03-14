@@ -1,6 +1,11 @@
 package test.videocall.ui
 
+import android.graphics.Bitmap
+import android.media.Image
+import android.media.MediaCodec.BufferInfo
+import android.util.Log
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -40,11 +45,31 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Alignment.Companion.CenterHorizontally
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.constraintlayout.compose.ConstraintLayout
+import desidev.rtc.media.ReceivingPort
+import desidev.rtc.media.camera.CameraCaptureImpl
+import desidev.rtc.media.stringyFyMediaFormat
+import desidev.videocall.service.message.AudioFormat
+import desidev.videocall.service.message.AudioSample
+import desidev.videocall.service.message.VideoFormat
+import desidev.videocall.service.message.VideoSample
+import desidev.videocall.service.message.toMediaFormat
 import desidev.videocall.service.rtcclient.DefaultRtcClient
+import desidev.videocall.service.rtcclient.TrackListener
+import desidev.videocall.service.rtcmsg.RTCMessage
+import desidev.videocall.service.rtcmsg.RTCMessage.Sample
+import desidev.videocall.service.rtcmsg.toMediaFormat
+import desidev.videocall.service.rtcmsg.toRTCFormat
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ClosedReceiveChannelException
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import test.videocall.R
@@ -98,7 +123,7 @@ private suspend fun processSignalEvents() {
             }
 
             is SessionClosedEvent -> {
-                if (screenState.value is ScreenState.IncomingCallState) {
+                if (screenState.value is ScreenState.InCallState) {
                     screenState.value = ScreenState.ConnectedState
                     rtc.closePeerConnection()
                 }
@@ -107,7 +132,7 @@ private suspend fun processSignalEvents() {
     }
 }
 
-private suspend fun callPeer(peer: Peer) {
+private suspend fun callToPeer(peer: Peer) {
     rtc.createLocalCandidate()
     signalClient.postOffer(
         PostOfferParams(
@@ -115,7 +140,6 @@ private suspend fun callPeer(peer: Peer) {
             candidates = rtc.getLocalIce()
         )
     )
-
     screenState.value = ScreenState.OutgoingCallState(peer)
 }
 
@@ -149,7 +173,7 @@ fun RTCCAllSample() {
                     ConnectedScreen(
                         peerLoader = { signalClient.getPeers() },
                         onCallToPeer = {
-                            scope.launch(Dispatchers.IO) { callPeer(it) }
+                            scope.launch(Dispatchers.IO) { callToPeer(it) }
                         }
                     )
                 }
@@ -342,7 +366,6 @@ fun IncomingCallScreen(offerEvent: OfferEvent) {
                     scope.launch {
                         rtc.createLocalCandidate()
                         rtc.setRemoteIce(offerEvent.candidates)
-                        rtc.createPeerConnection()
                         signalClient.postAnswer(
                             PostAnswerParams(
                                 receiverId = offerEvent.sender.id,
@@ -397,22 +420,78 @@ fun IncomingCallScreen(offerEvent: OfferEvent) {
 
 @Composable
 fun InCallScreen(remotePeer: Peer) {
+    val TAG = "InCallScreen"
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val cameraCapture = remember { CameraCaptureImpl(context) }
+    val currentPreviewFrame = remember { mutableStateOf<ImageBitmap?>(null) }
+    val yuvToRgbConverter = remember { desidev.utility.yuv.YuvToRgbConverter(context) }
 
+    fun Image.toBitmap(): Bitmap {
+        val outputBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        yuvToRgbConverter.yuvToRgb(this, outputBitmap)
+        return outputBitmap
+    }
 
     DisposableEffect(Unit) {
+        cameraCapture.addPreviewFrameListener {
+            currentPreviewFrame.value = it.toBitmap().asImageBitmap()
+            it.close()
+        }
+
+        rtc.setTrackListener(object : TrackListener {
+            override fun onVideoStreamAvailable(videoFormat: RTCMessage.Format) {
+                Log.d(TAG, "onVideoStreamAvailable: $videoFormat")
+                val mediaFormat = videoFormat.toMediaFormat()
+            }
+
+            override fun onAudioStreamAvailable(audioFormat: RTCMessage.Format) {
+                Log.d(TAG, "onAudioStreamAvailable: $audioFormat")
+                val mediaFormat = audioFormat.toMediaFormat()
+            }
+
+            override fun onNextVideoSample(videoSample: Sample) {
+                Log.d(TAG, "onNextVideoSample: ${videoSample.timeStamp}")
+            }
+
+            override fun onNextAudioSample(audioSample: Sample) {
+            }
+
+            override fun onVideoStreamDisable() {
+            }
+
+            override fun onAudioStreamDisable() {
+            }
+        })
+
         scope.launch {
             rtc.createPeerConnection()
-            rtc.startSendingMessage()
+            cameraCapture.start()
+            val mediaFormat = cameraCapture.getMediaFormat()
+            val channel = receivingPortToChannel(cameraCapture.compressedDataChannel())
+            rtc.addVideoStream(mediaFormat.get().toRTCFormat(), channel)
         }
+
         onDispose {
             scope.launch {
+                cameraCapture.stop()
+                cameraCapture.release()
                 rtc.closePeerConnection()
             }
         }
     }
 
     ConstraintLayout(modifier = Modifier.fillMaxSize()) {
+        // preview frame
+        if (currentPreviewFrame.value!= null) {
+            Image(
+                bitmap = currentPreviewFrame.value!!,
+                contentDescription = "Camera frame",
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+
+
         val withPeer = createRef()
         Text(
             text = "Call with ${remotePeer.name}",
@@ -440,3 +519,27 @@ fun InCallScreen(remotePeer: Peer) {
         }
     }
 }
+
+
+
+private fun CoroutineScope.receivingPortToChannel(port: ReceivingPort<Pair<ByteArray, BufferInfo>>): Channel<Sample> {
+    val channel = Channel<Sample>(Channel.BUFFERED)
+    launch {
+        while (port.isOpenForReceive) {
+            try {
+                channel.send(port.receive().run {
+                    Sample(
+                        timeStamp = second.presentationTimeUs,
+                        sample = first,
+                        flag = second.flags
+                    )
+                })
+            } catch (_: Exception) { }
+        }
+        channel.close()
+    }
+    return channel
+}
+
+
+

@@ -20,11 +20,11 @@ import desidev.turnclient.ICECandidate.CandidateType
 import desidev.turnclient.TurnClient
 import desidev.turnclient.attribute.AddressValue
 import desidev.videocall.service.CallService.State
-import desidev.videocall.service.camera.CameraCapture
-import desidev.videocall.service.camera.CameraLensFacing
+import desidev.rtc.media.camera.CameraCapture
+import desidev.rtc.media.camera.CameraLensFacing
 import desidev.videocall.service.signal.Signal
 import desidev.videocall.service.signal.SignalEvent
-import desidev.videocall.service.yuv.YuvToRgbConverter
+import desidev.utility.yuv.YuvToRgbConverter
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -58,8 +58,8 @@ class DefaultCallService<P : Any>(
     private val signal = signal
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val turn = TurnClient(InetSocketAddress(turnIp, turnPort), username, password)
-    private val _yuvToRgbConverter = YuvToRgbConverter(context)
-    private val _cameraCapture: CameraCapture = CameraCapture.create(context)
+    private val _yuvToRgbConverter = desidev.utility.yuv.YuvToRgbConverter(context)
+    private val _cameraCapture: desidev.rtc.media.camera.CameraCapture = desidev.rtc.media.camera.CameraCapture.create(context)
     private val _stateLock = Mutex()
     private val _serviceState = MutableStateFlow<State>(State.Idle)
 
@@ -75,7 +75,7 @@ class DefaultCallService<P : Any>(
 
     private var receivedOffer: Offer<P>? = null
 
-    override val cameraFace: StateFlow<CameraLensFacing>
+    override val cameraFace: StateFlow<desidev.rtc.media.camera.CameraLensFacing>
         get() = TODO("Not yet implemented")
 
     override val isCallActive: StateFlow<Boolean>
@@ -165,7 +165,7 @@ class DefaultCallService<P : Any>(
     override fun switchCamera() {
         scope.launch {
             val lensFacing =
-                if (cameraFace.value == CameraLensFacing.FRONT) CameraLensFacing.BACK else CameraLensFacing.FRONT
+                if (cameraFace.value == desidev.rtc.media.camera.CameraLensFacing.FRONT) desidev.rtc.media.camera.CameraLensFacing.BACK else desidev.rtc.media.camera.CameraLensFacing.FRONT
             _cameraCapture.selectCamera(lensFacing)
         }
     }

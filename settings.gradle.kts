@@ -25,3 +25,5 @@ rootProject.name = "CallService"
 include(":app")
 include(":webrtc")
 include(":turnclient")
+include(":rtcmedia")
+include(":utility")

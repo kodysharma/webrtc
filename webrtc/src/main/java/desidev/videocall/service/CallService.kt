@@ -2,7 +2,7 @@ package desidev.videocall.service
 
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import desidev.videocall.service.camera.CameraLensFacing
+import desidev.rtc.media.camera.CameraLensFacing
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -20,7 +20,6 @@ interface CallService<P : Any> {
     // view content
     @Composable
     fun PeerViewContent(modifier: Modifier)
-
     @Composable
     fun SelfPreviewContent(modifier: Modifier)
 

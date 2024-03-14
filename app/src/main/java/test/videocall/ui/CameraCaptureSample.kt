@@ -28,9 +28,6 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
-import desidev.videocall.service.camera.CameraCapture
-import desidev.videocall.service.camera.CameraLensFacing
-import desidev.videocall.service.yuv.YuvToRgbConverter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -42,8 +39,8 @@ import java.nio.ByteBuffer
 fun CameraCaptureSample(modifier: Modifier = Modifier) {
     val TAG = "CameraCaptureSample"
     val context = LocalContext.current
-    val cameraCapture = remember { CameraCapture.create(context) }
-    val yuvToRgbConverter = remember { YuvToRgbConverter(context) }
+    val cameraCapture = remember { desidev.rtc.media.camera.CameraCapture.create(context) }
+    val yuvToRgbConverter = remember { desidev.utility.yuv.YuvToRgbConverter(context) }
     var currentFrame by remember { mutableStateOf<Bitmap?>(null) }
     var isRunning by remember { mutableStateOf(false) }
 
@@ -130,8 +127,8 @@ fun CameraCaptureSample(modifier: Modifier = Modifier) {
                 IconButton(onClick = {
                     scope.launch {
                         cameraCapture.selectCamera(
-                            if (cameraCapture.selectedCamera.lensFacing == CameraLensFacing.FRONT) CameraLensFacing.BACK
-                            else CameraLensFacing.FRONT
+                            if (cameraCapture.selectedCamera.lensFacing == desidev.rtc.media.camera.CameraLensFacing.FRONT) desidev.rtc.media.camera.CameraLensFacing.BACK
+                            else desidev.rtc.media.camera.CameraLensFacing.FRONT
                         )
                     }
                 }) {

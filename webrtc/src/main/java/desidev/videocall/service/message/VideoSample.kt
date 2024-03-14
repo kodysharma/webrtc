@@ -1,6 +1,6 @@
 package desidev.videocall.service.message
 
-@SymbolId(4)
+@SymbolId(11)
 data class VideoSample(
     @property:SymbolId(1) val timeStamp: Long,
     @property:SymbolId(2) val flag: Int,
@@ -14,9 +14,7 @@ data class VideoSample(
 
         if (timeStamp != other.timeStamp) return false
         if (flag != other.flag) return false
-        if (!sample.contentEquals(other.sample)) return false
-
-        return true
+        return sample.contentEquals(other.sample)
     }
 
     override fun hashCode(): Int {

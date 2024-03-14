@@ -18,14 +18,14 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import desidev.videocall.service.SpeedMeter
-import desidev.videocall.service.codec.Codec
-import desidev.videocall.service.codec.configure
-import desidev.videocall.service.ext.asMilliSec
-import desidev.videocall.service.ext.toLong
-import desidev.videocall.service.mediasrc.AudioBuffer
-import desidev.videocall.service.mediasrc.SendingPort
-import desidev.videocall.service.mediasrc.VoiceRecorder
+import desidev.utility.SpeedMeter
+import desidev.rtc.media.codec.Codec
+import desidev.rtc.media.codec.configure
+import desidev.utility.asMilliSec
+import desidev.utility.toLong
+import desidev.rtc.media.AudioBuffer
+import desidev.rtc.media.SendingPort
+import desidev.rtc.media.VoiceRecorder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -40,12 +40,12 @@ private const val TAG = "AudioRecordingSample"
 @Composable
 fun AudioRecordingSample() {
     val scope = rememberCoroutineScope()
-    val voiceRecorderOutput = remember { SendingPort<AudioBuffer>() }
+    val voiceRecorderOutput = remember { desidev.rtc.media.SendingPort<desidev.rtc.media.AudioBuffer>() }
     val voiceRecorder = remember {
-        VoiceRecorder.Builder().setChunkLenInMs(20.asMilliSec.toLong()).build()
+        desidev.rtc.media.VoiceRecorder.Builder().setChunkLenInMs(20.asMilliSec.toLong()).build()
     }
     val encoder = remember {
-        Codec.createAudioEncoder().apply {
+        desidev.rtc.media.codec.Codec.createAudioEncoder().apply {
             setInPort(voiceRecorderOutput)
             configure(voiceRecorder.format)
         }
@@ -67,7 +67,7 @@ fun AudioRecordingSample() {
 
             Log.d(TAG, "flowFromEncoderToMuxer: Muxer started")
 
-            val speedMeter = SpeedMeter("flowFromEncoderToMuxer")
+            val speedMeter = desidev.utility.SpeedMeter("flowFromEncoderToMuxer")
 
             encoder.run {
                 while (outPort.isOpenForReceive) {

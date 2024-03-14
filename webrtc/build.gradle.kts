@@ -1,6 +1,8 @@
+
 plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.jetbrains.kotlin.android)
+    kotlin("plugin.serialization") version "1.9.22"
 }
 
 android {
@@ -45,13 +47,16 @@ android {
 
 dependencies {
     api(project(":turnclient"))
-    implementation(platform(libs.androidx.compose.bom))
+    api(project(":rtcmedia"))
+    api(project(":utility"))
 
+    implementation(libs.kotlin.reflect)
+    implementation(libs.kotlinx.serialization.protobuf)
+
+    implementation(platform(libs.androidx.compose.bom))
     // dependency bundle
     implementation(libs.bundles.webrtc.dep.bundle)
-
     coreLibraryDesugaring(libs.coreLibraryDesugaring)
-
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

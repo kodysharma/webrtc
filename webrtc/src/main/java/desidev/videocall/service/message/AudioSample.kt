@@ -1,6 +1,6 @@
 package desidev.videocall.service.message
 
-@SymbolId(2)
+@SymbolId(21)
 data class AudioSample(
     @property:SymbolId(1) val timeStampUs: Long,
     @property:SymbolId(2) val flag: Int,
