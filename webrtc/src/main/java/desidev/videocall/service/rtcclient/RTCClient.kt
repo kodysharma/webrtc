@@ -1,15 +1,10 @@
 package desidev.videocall.service.rtcclient
 
-import android.media.MediaFormat
 import desidev.turnclient.ICECandidate
-import desidev.videocall.service.message.AudioFormat
-import desidev.videocall.service.message.AudioSample
-import desidev.videocall.service.message.VideoFormat
-import desidev.videocall.service.message.VideoSample
 import desidev.videocall.service.rtcmsg.RTCMessage
 import desidev.videocall.service.rtcmsg.RTCMessage.Format
 import desidev.videocall.service.rtcmsg.RTCMessage.Sample
-import kotlinx.coroutines.channels.ReceiveChannel
+import kotlinx.coroutines.flow.Flow
 
 interface TrackListener {
     fun onVideoStreamAvailable(videoFormat: RTCMessage.Format)
@@ -27,8 +22,7 @@ interface RTCClient {
     fun setRemoteIce(candidates: List<ICECandidate>)
     suspend fun createPeerConnection()
     suspend fun closePeerConnection()
-    fun addStream(format : Format, channel: ReceiveChannel<Sample>)
+    fun addStream(format: Format, channel: Flow<Sample>)
     fun setTrackListener(listener: TrackListener)
-
     fun dispose()
 }

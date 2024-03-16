@@ -119,7 +119,7 @@ class DefaultRPCClient(private val session: DefaultClientWebSocketSession) : RPC
                             callback(resultObject)
                         }
                     } else if (objectType == "event") {
-                        val callback = eventDispatch.remove(id)
+                        val callback = eventDispatch[id]
                         if (callback != null) {
                             callback(jsonObject.get("next") ?: JsonObject())
                         }

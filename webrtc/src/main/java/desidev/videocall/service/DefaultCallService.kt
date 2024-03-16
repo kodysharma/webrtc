@@ -20,11 +20,8 @@ import desidev.turnclient.ICECandidate.CandidateType
 import desidev.turnclient.TurnClient
 import desidev.turnclient.attribute.AddressValue
 import desidev.videocall.service.CallService.State
-import desidev.rtc.media.camera.CameraCapture
-import desidev.rtc.media.camera.CameraLensFacing
 import desidev.videocall.service.signal.Signal
 import desidev.videocall.service.signal.SignalEvent
-import desidev.utility.yuv.YuvToRgbConverter
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -133,7 +130,7 @@ class DefaultCallService<P : Any>(
             if (!isCamClosed) {
                 var imageBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
                 LaunchedEffect(key1 = Unit) {
-                    _cameraCapture.addPreviewFrameListener { image ->
+                    _cameraCapture.setPreviewFrameListener { image ->
                         imageBitmap = image.toImageBitmap()
                         image.close()
                     }

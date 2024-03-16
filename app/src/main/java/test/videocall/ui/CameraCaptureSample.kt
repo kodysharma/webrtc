@@ -29,11 +29,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import test.videocall.MediaMuxerWrapper
 import test.videocall.R
 import java.nio.ByteBuffer
+import kotlin.time.Duration.Companion.seconds
 
 @Composable
 fun CameraCaptureSample(modifier: Modifier = Modifier) {
@@ -86,11 +88,14 @@ fun CameraCaptureSample(modifier: Modifier = Modifier) {
     }
 
     DisposableEffect(Unit) {
-        cameraCapture.addPreviewFrameListener { image: Image ->
+        println("adding preview frame listener")
+        cameraCapture.setPreviewFrameListener { image: Image ->
+            Log.d(TAG, "frame update")
             currentFrame = image.toBitmap()
             image.close()
         }
         onDispose {
+            cameraCapture.setPreviewFrameListener(null)
             scope.launch {
                 cameraCapture.release()
             }

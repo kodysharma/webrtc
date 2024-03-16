@@ -37,7 +37,7 @@ interface CameraCapture {
     suspend fun stop()
     suspend fun release()
     suspend fun selectCamera(cameraFace: CameraLensFacing)
-    fun addPreviewFrameListener(listener: (Image) -> Unit)
+    fun setPreviewFrameListener(listener: ((Image) -> Unit)?)
     fun compressedDataChannel(): ReceivingPort<Pair<ByteArray, BufferInfo>>
     fun getMediaFormat(): Future<MediaFormat>
 
@@ -78,8 +78,21 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
     private val _cameraManager: CameraManager =
         context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
 
+    private var previewImageListener: ((Image) -> Unit)? = null
+
     private val _previewImageReader: ImageReader =
-        ImageReader.newInstance(640, 480, ImageFormat.YUV_420_888, 2)
+        ImageReader.newInstance(640, 480, ImageFormat.YUV_420_888, 2).apply {
+            setOnImageAvailableListener({
+                val image = it.acquireLatestImage()
+                if (image != null) {
+                    if (previewImageListener != null) {
+                        previewImageListener!!.invoke(image)
+                    } else {
+                        image.close()
+                    }
+                }
+            }, null)
+        }
 
     private val _encoderSurface: Surface
 
@@ -98,6 +111,7 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
             SelectedCamera(lensFacing, id)
         }
     }
+
 
     //    private val _scope = CoroutineScope(Dispatchers.Default)
     private val _handlerThread = HandlerThread("CameraHandler").apply { start() }
@@ -215,12 +229,8 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
         }
     }
 
-    override fun addPreviewFrameListener(listener: (Image) -> Unit) {
-        _previewImageReader.setOnImageAvailableListener({ reader ->
-            reader.acquireLatestImage()?.run {
-                listener(this)
-            }
-        }, null)
+    override fun setPreviewFrameListener(listener: ((Image) -> Unit)?) {
+        previewImageListener = listener
     }
 
     override fun compressedDataChannel(): ReceivingPort<Pair<ByteArray, BufferInfo>> {

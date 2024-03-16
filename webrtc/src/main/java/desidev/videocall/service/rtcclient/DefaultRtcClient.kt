@@ -14,12 +14,10 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.channels.ReceiveChannel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.decodeFromByteArray
 import kotlinx.serialization.encodeToByteArray
@@ -27,8 +25,6 @@ import kotlinx.serialization.protobuf.ProtoBuf
 import java.io.IOException
 import java.net.InetAddress
 import java.net.InetSocketAddress
-import kotlin.coroutines.resume
-import kotlin.coroutines.suspendCoroutine
 
 class DefaultRtcClient(
     turnServerIp: String,
@@ -104,36 +100,42 @@ class DefaultRtcClient(
 
         // callback function to receive messages from the remote peer
         dataChannel!!.receiveMessage { bytes ->
-            val message = ProtoBuf.decodeFromByteArray<RTCMessage>(bytes)
-            when {
-                message.audioSample != null -> {
-                    Log.d(TAG, "Received audio sample: $message")
-                    trackListener?.onNextAudioSample(message.audioSample)
-                }
+            try {
+                val message = ProtoBuf.decodeFromByteArray<RTCMessage>(bytes)
+                when {
+                    message.audioSample != null -> {
+                        Log.d(TAG, "Received audio sample: $message")
+                        trackListener?.onNextAudioSample(message.audioSample)
+                    }
 
-                message.videoSample != null -> {
-                    Log.d(TAG, "Received video sample: $message")
-                    trackListener?.onNextVideoSample(message.videoSample)
-                }
+                    message.videoSample != null -> {
+                        Log.d(TAG, "Received video sample: $message")
+                        trackListener?.onNextVideoSample(message.videoSample)
+                    }
 
-                message.control != null -> {
-                    val control = message.control
-                    Log.d(TAG, "Received control message: $message")
-                    when {
-                        control.flags and Control.STREAM_ENABLE != 0 -> {
-                            check(control.data?.format != null) { "STREAM_ENABLE_FLAG message does not contain format data" }
-                            with(control.data!!) { onStreamEnable(format, streamId) }
-                        }
+                    message.control != null -> {
+                        val control = message.control
+                        Log.d(TAG, "Received control message: $message")
+                        when {
+                            control.flags and Control.STREAM_ENABLE != 0 -> {
+                                check(control.data?.format != null) { "STREAM_ENABLE_FLAG message does not contain format data" }
+                                with(control.data!!) { onStreamEnable(format, streamId) }
+                                sendAcknowledgement(control.txId)
+                            }
 
-                        control.flags and Control.STREAM_DISABLE != 0 -> {
-                            with(control.data!!) { onStreamDisable(streamId) }
-                        }
+                            control.flags and Control.STREAM_DISABLE != 0 -> {
+                                with(control.data!!) { onStreamDisable(streamId) }
+                                sendAcknowledgement(control.txId)
+                            }
 
-                        control.flags and Control.ACKNOWLEDGE != 0 -> {
-                            messageAck.acknoledge(control)
+                            control.flags and Control.ACKNOWLEDGE != 0 -> {
+                                messageAck.acknowledge(control)
+                            }
                         }
                     }
                 }
+            } catch (ex: Exception) {
+                Log.e(TAG, "Error while decoding message: $ex")
             }
         }
     }
@@ -168,11 +170,25 @@ class DefaultRtcClient(
         }
     }
 
+    @OptIn(ExperimentalSerializationApi::class)
+    private fun sendAcknowledgement(id: Int) {
+        dataChannel?.sendMessage(
+            ProtoBuf.encodeToByteArray(
+                RTCMessage(
+                    control = Control(
+                        txId = id,
+                        flags = Control.ACKNOWLEDGE
+                    )
+                )
+            )
+        )
+    }
+
     override suspend fun closePeerConnection() {
         tryDeleteAllocation()
     }
 
-    override fun addStream(format: RTCMessage.Format, channel: ReceiveChannel<RTCMessage.Sample>) {
+    override fun addStream(format: RTCMessage.Format, channel: Flow<RTCMessage.Sample>) {
         val mimeType = format.map[MediaFormat.KEY_MIME]?.string
             ?: throw IllegalArgumentException("Unknown media type")
 
@@ -185,30 +201,32 @@ class DefaultRtcClient(
                 addAudioStream(format, channel)
             }
         }
-
     }
 
     @OptIn(ExperimentalSerializationApi::class)
     fun addVideoStream(
         format: RTCMessage.Format,
-        channel: ReceiveChannel<RTCMessage.Sample>
+        sampleFlow: Flow<RTCMessage.Sample>
     ) {
-        this.outAudioStreamFormat = format
+        if (this.outVideoStreamFormat != null) return
         scope.launch {
+            // send format to remote peer before sending any samples
+            // this waits for the acknowledge
             sendControlMessage(
                 Control(
                     flags = Control.STREAM_ENABLE,
                     data = ControlData(
                         format = format,
-                        streamId = 1
+                        streamId = VIDEO_STREAM_ID
                     )
                 )
             )
+            Log.d(TAG, "Video stream enabled")
 
-            for (sample in channel) {
+            sampleFlow.collect{
                 dataChannel?.sendMessage(
                     ProtoBuf.encodeToByteArray(
-                        RTCMessage(videoSample = sample)
+                        RTCMessage(videoSample = it)
                     )
                 )
             }
@@ -216,7 +234,7 @@ class DefaultRtcClient(
     }
 
     @OptIn(ExperimentalSerializationApi::class)
-    fun addAudioStream(format: RTCMessage.Format, channel: ReceiveChannel<RTCMessage.Sample>) {
+    fun addAudioStream(format: RTCMessage.Format, sampleFlow: Flow<RTCMessage.Sample>) {
         this.outVideoStreamFormat = format
         scope.launch {
             sendControlMessage(
@@ -224,14 +242,14 @@ class DefaultRtcClient(
                     flags = Control.STREAM_ENABLE,
                     data = ControlData(
                         format = format,
-                        streamId = 2
+                        streamId = AUDIO_STREAM_ID
                     )
                 )
             )
 
-            for (audioSample in channel) {
+            sampleFlow.collect {
                 dataChannel?.sendMessage(
-                    ProtoBuf.encodeToByteArray(RTCMessage(audioSample = audioSample))
+                    ProtoBuf.encodeToByteArray(RTCMessage(audioSample = it))
                 )
             }
 
@@ -272,42 +290,15 @@ class DefaultRtcClient(
 
     @OptIn(ExperimentalSerializationApi::class)
     private suspend fun sendControlMessage(control: Control) {
+        var attempt = 0
+        val start = System.currentTimeMillis()
         val encoded = ProtoBuf.encodeToByteArray(RTCMessage(control = control))
         do {
             dataChannel?.sendMessage(encoded)
+            attempt++
         } while (!messageAck.isAck(control))
+        val end = System.currentTimeMillis()
+        Log.d(TAG, "Sent control message in ${end - start} ms")
     }
 }
 
-class MessageAcknowledgement {
-    interface AckCallback {
-        fun onAcknowledge()
-    }
-
-    private val timeout: Long = 300
-    private val callbacks = mutableMapOf<Int, AckCallback>()
-    suspend fun isAck(message: Control): Boolean {
-        return withAckTimeout(message.id)
-    }
-
-    private suspend fun withAckTimeout(key: Int) = try {
-        withTimeout(timeout) {
-            return@withTimeout suspendCoroutine { continuation ->
-                callbacks[key] = object : AckCallback {
-                    override fun onAcknowledge() {
-                        continuation.resume(true)
-                    }
-                }
-            }
-        }
-    } catch (ex: TimeoutCancellationException) {
-        false
-    }
-
-    fun acknoledge(message: Control) {
-        check(message.flags and RTCMessage.Control.ACKNOWLEDGE == RTCMessage.Control.ACKNOWLEDGE) {
-            "Message is not an acknowledgement: $message"
-        }
-        callbacks[message.id]?.onAcknowledge()
-    }
-}

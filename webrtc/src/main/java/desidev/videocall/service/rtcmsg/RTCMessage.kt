@@ -19,7 +19,7 @@ data class RTCMessage(
 
     @Serializable
     data class Control(
-        val id: Int = numberSeqGenerator.next(),
+        val txId: Int = numberSeqGenerator.next(),
         val flags: Int,
         val data: ControlData? = null,
     ) {

@@ -5,7 +5,6 @@ import android.media.Image
 import android.media.MediaCodec.BufferInfo
 import android.util.Log
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -33,9 +32,8 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -46,148 +44,113 @@ import androidx.compose.ui.Alignment.Companion.CenterHorizontally
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.constraintlayout.compose.ConstraintLayout
 import desidev.rtc.media.ReceivingPort
 import desidev.rtc.media.camera.CameraCaptureImpl
-import desidev.rtc.media.stringyFyMediaFormat
-import desidev.videocall.service.message.AudioFormat
-import desidev.videocall.service.message.AudioSample
-import desidev.videocall.service.message.VideoFormat
-import desidev.videocall.service.message.VideoSample
-import desidev.videocall.service.message.toMediaFormat
-import desidev.videocall.service.rtcclient.DefaultRtcClient
-import desidev.videocall.service.rtcclient.TrackListener
-import desidev.videocall.service.rtcmsg.RTCMessage
 import desidev.videocall.service.rtcmsg.RTCMessage.Sample
-import desidev.videocall.service.rtcmsg.toMediaFormat
-import desidev.videocall.service.rtcmsg.toRTCFormat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.channels.ClosedReceiveChannelException
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import test.videocall.R
-import test.videocall.signalclient.AnswerEvent
-import test.videocall.signalclient.OfferCancelledEvent
-import test.videocall.signalclient.OfferEvent
+import test.videocall.RTCPhone
 import test.videocall.signalclient.Peer
-import test.videocall.signalclient.PostAnswerParams
-import test.videocall.signalclient.PostOfferParams
-import test.videocall.signalclient.SessionClosedEvent
-import test.videocall.signalclient.SignalClient
-
-sealed class ScreenState {
-    data object InitialState : ScreenState()
-    data object ConnectedState : ScreenState()
-    data class IncomingCallState(val offerEvent: OfferEvent) : ScreenState()
-    data class OutgoingCallState(val peer: Peer) : ScreenState()
-    data class InCallState(val peer: Peer) : ScreenState()
-}
-
-const val url = "ws://139.59.85.69:8080"
-val screenState: MutableState<ScreenState> = mutableStateOf(ScreenState.InitialState)
-val rtc = DefaultRtcClient("64.23.160.217", 3478, "test", "test123")
-val signalClient = SignalClient()
-
-
-private suspend fun processSignalEvents() {
-    signalClient.eventFlow.collect { event ->
-        when (event) {
-            is OfferEvent -> {
-                if (screenState.value == ScreenState.ConnectedState) {
-                    screenState.value = ScreenState.IncomingCallState(event)
-                }
-            }
-
-            is AnswerEvent -> {
-                if (screenState.value is ScreenState.OutgoingCallState) {
-                    if (event.accepted) {
-                        rtc.setRemoteIce(event.candidates!!)
-                        screenState.value = ScreenState.InCallState(event.sender)
-                    } else {
-                        screenState.value = ScreenState.ConnectedState
-                    }
-                }
-            }
-
-            is OfferCancelledEvent -> {
-                if (screenState.value is ScreenState.IncomingCallState) {
-                    screenState.value = ScreenState.ConnectedState
-                }
-            }
-
-            is SessionClosedEvent -> {
-                if (screenState.value is ScreenState.InCallState) {
-                    screenState.value = ScreenState.ConnectedState
-                    rtc.closePeerConnection()
-                }
-            }
-        }
-    }
-}
-
-private suspend fun callToPeer(peer: Peer) {
-    rtc.createLocalCandidate()
-    signalClient.postOffer(
-        PostOfferParams(
-            receiverId = peer.id,
-            candidates = rtc.getLocalIce()
-        )
-    )
-    screenState.value = ScreenState.OutgoingCallState(peer)
-}
 
 
 @Composable
 fun RTCCAllSample() {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var peerName by remember { mutableStateOf("") }
+    val rtcPhone = remember { RTCPhone(context) }
+    val phoneState by rtcPhone.phoneStateFlow.collectAsState()
+    val cameraEnable by rtcPhone.cameraStateFlow.collectAsState()
+
+    LaunchedEffect(Unit) {
+        rtcPhone.phoneStateFlow.collect {
+            if (it is RTCPhone.State.InSession || it is RTCPhone.State.OutgoingCall || it is RTCPhone.State.IncomingCall) {
+                if (!rtcPhone.cameraStateFlow.value) {
+                    rtcPhone.enableCamera()
+                }
+            } else {
+                if (rtcPhone.cameraStateFlow.value) {
+                    rtcPhone.disableCamera()
+                }
+            }
+        }
+    }
 
     Surface {
         AnimatedContent(
-            targetState = screenState.value,
+            targetState = phoneState,
             label = "Screen State"
-        ) { state: ScreenState ->
+        ) { state ->
             when (state) {
-                is ScreenState.InitialState -> {
-                    InitialScreen(peerName = peerName,
-                        onPeerNameChanged = { peerName = it },
-                        onConnectClicked = {
+                RTCPhone.State.OnLine -> {
+                    ConnectedScreen(
+                        peerLoader = {
+                            withContext(Dispatchers.IO) {
+                                rtcPhone.getPeers()
+                            }
+                        },
+                        onCallToPeer = { peer ->
                             scope.launch {
                                 withContext(Dispatchers.IO) {
-                                    signalClient.connect("$url/$peerName")
-                                    screenState.value = ScreenState.ConnectedState
+                                    rtcPhone.makeCall(peer)
                                 }
-                                processSignalEvents()
                             }
-                        })
-                }
-
-                is ScreenState.ConnectedState -> {
-                    ConnectedScreen(
-                        peerLoader = { signalClient.getPeers() },
-                        onCallToPeer = {
-                            scope.launch(Dispatchers.IO) { callToPeer(it) }
                         }
                     )
                 }
 
-                is ScreenState.OutgoingCallState -> {
-                    OutGoingCallScreen(receiverPeer = state.peer)
+                is RTCPhone.State.OutgoingCall -> {
+                    OutGoingCallScreen(
+                        receiverPeer = state.receiver,
+                        onEndCallClicked = { scope.launch { withContext(Dispatchers.IO) { rtcPhone.endCall() } } },
+                        rtcPhone = rtcPhone
+                    )
                 }
 
-                is ScreenState.IncomingCallState -> {
-                    IncomingCallScreen(offerEvent = state.offerEvent)
+                is RTCPhone.State.IncomingCall -> {
+                    IncomingCallScreen(
+                        sender = state.sender,
+                        onAcceptClicked = {
+                            scope.launch {
+                                withContext(Dispatchers.IO) {
+                                    rtcPhone.acceptCall(state.sender)
+                                }
+                            }
+                        },
+                        onRejectClicked = {
+                            scope.launch {
+                                withContext(Dispatchers.IO) {
+                                    rtcPhone.rejectCall(state.sender)
+                                }
+                            }
+                        }
+                    )
                 }
 
-                is ScreenState.InCallState -> {
-                    InCallScreen(remotePeer = state.peer)
+                is RTCPhone.State.InSession -> {
+                    InCallScreen(remotePeer = state.peer, rtcPhone = rtcPhone)
+                }
+
+                RTCPhone.State.OffLine -> {
+                    OfflineScreen(
+                        peerName = peerName,
+                        onPeerNameChanged = { peerName = it },
+                        onConnectClicked = {
+                            scope.launch {
+                                withContext(Dispatchers.IO) {
+                                    rtcPhone.goOnline(peerName)
+                                }
+                            }
+                        }
+                    )
                 }
             }
         }
@@ -196,7 +159,7 @@ fun RTCCAllSample() {
 
 
 @Composable
-fun InitialScreen(
+fun OfflineScreen(
     peerName: String, onPeerNameChanged: (String) -> Unit, onConnectClicked: () -> Unit
 ) {
     Column(
@@ -241,7 +204,10 @@ fun ConnectedScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text(text = "name: ${peer.name}", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        text = "name: ${peer.name}",
+                        style = MaterialTheme.typography.bodyLarge
+                    )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(text = "id: ${peer.id}", style = MaterialTheme.typography.bodySmall)
                 }
@@ -294,9 +260,19 @@ fun ConnectedScreen(
 }
 
 @Composable
-fun OutGoingCallScreen(receiverPeer: Peer) {
+fun OutGoingCallScreen(
+    receiverPeer: Peer,
+    onEndCallClicked: () -> Unit,
+    rtcPhone: RTCPhone
+) {
     Surface(modifier = Modifier.fillMaxSize()) {
         ConstraintLayout {
+            val localPeerView = createRef()
+            rtcPhone.LocalPeerView(modifier = Modifier.fillMaxSize().constrainAs(localPeerView) {
+                centerHorizontallyTo(parent)
+                bottom.linkTo(parent.bottom, 16.dp)
+            })
+
             val name = createRef()
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -314,9 +290,7 @@ fun OutGoingCallScreen(receiverPeer: Peer) {
 
             val buttonEndCall = createRef()
             IconButton(
-                onClick = {
-                    screenState.value = ScreenState.ConnectedState
-                },
+                onClick = onEndCallClicked,
                 colors = IconButtonDefaults.iconButtonColors(
                     containerColor = Color.Red,
                     contentColor = Color.White
@@ -336,7 +310,7 @@ fun OutGoingCallScreen(receiverPeer: Peer) {
 }
 
 @Composable
-fun IncomingCallScreen(offerEvent: OfferEvent) {
+fun IncomingCallScreen(sender: Peer, onRejectClicked: () -> Unit, onAcceptClicked: () -> Unit) {
     val scope = rememberCoroutineScope()
     ConstraintLayout(modifier = Modifier.fillMaxSize()) {
         val name = createRef()
@@ -348,7 +322,7 @@ fun IncomingCallScreen(offerEvent: OfferEvent) {
             }
         ) {
             Text(text = "Incoming call from", style = MaterialTheme.typography.headlineMedium)
-            Text(text = offerEvent.sender.name, style = MaterialTheme.typography.labelLarge)
+            Text(text = sender.name, style = MaterialTheme.typography.labelLarge)
         }
 
         val answerButtons = createRef()
@@ -362,20 +336,7 @@ fun IncomingCallScreen(offerEvent: OfferEvent) {
         ) {
             // accept icon button
             IconButton(
-                onClick = {
-                    scope.launch {
-                        rtc.createLocalCandidate()
-                        rtc.setRemoteIce(offerEvent.candidates)
-                        signalClient.postAnswer(
-                            PostAnswerParams(
-                                receiverId = offerEvent.sender.id,
-                                accepted = true,
-                                candidates = rtc.getLocalIce()
-                            )
-                        )
-                        screenState.value = ScreenState.InCallState(offerEvent.sender)
-                    }
-                },
+                onClick = onAcceptClicked,
                 colors = IconButtonDefaults.iconButtonColors(
                     containerColor = Color.Green,
                     contentColor = Color.White
@@ -389,20 +350,7 @@ fun IncomingCallScreen(offerEvent: OfferEvent) {
 
             // decline icon button
             IconButton(
-                onClick = {
-                    scope.launch {
-                        rtc.createLocalCandidate()
-                        rtc.setRemoteIce(offerEvent.candidates)
-                        signalClient.postAnswer(
-                            PostAnswerParams(
-                                receiverId = offerEvent.sender.id,
-                                accepted = false,
-                                candidates = null
-                            )
-                        )
-                        screenState.value = ScreenState.ConnectedState
-                    }
-                },
+                onClick = onRejectClicked,
                 colors = IconButtonDefaults.iconButtonColors(
                     containerColor = Color.Red,
                     contentColor = Color.White
@@ -419,7 +367,7 @@ fun IncomingCallScreen(offerEvent: OfferEvent) {
 
 
 @Composable
-fun InCallScreen(remotePeer: Peer) {
+fun InCallScreen(remotePeer: Peer, rtcPhone: RTCPhone) {
     val TAG = "InCallScreen"
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -433,64 +381,13 @@ fun InCallScreen(remotePeer: Peer) {
         return outputBitmap
     }
 
-    DisposableEffect(Unit) {
-        cameraCapture.addPreviewFrameListener {
-            currentPreviewFrame.value = it.toBitmap().asImageBitmap()
-            it.close()
-        }
-
-        rtc.setTrackListener(object : TrackListener {
-            override fun onVideoStreamAvailable(videoFormat: RTCMessage.Format) {
-                Log.d(TAG, "onVideoStreamAvailable: $videoFormat")
-                val mediaFormat = videoFormat.toMediaFormat()
-            }
-
-            override fun onAudioStreamAvailable(audioFormat: RTCMessage.Format) {
-                Log.d(TAG, "onAudioStreamAvailable: $audioFormat")
-                val mediaFormat = audioFormat.toMediaFormat()
-            }
-
-            override fun onNextVideoSample(videoSample: Sample) {
-                Log.d(TAG, "onNextVideoSample: ${videoSample.timeStamp}")
-            }
-
-            override fun onNextAudioSample(audioSample: Sample) {
-            }
-
-            override fun onVideoStreamDisable() {
-            }
-
-            override fun onAudioStreamDisable() {
-            }
-        })
-
-        scope.launch {
-            rtc.createPeerConnection()
-            cameraCapture.start()
-            val mediaFormat = cameraCapture.getMediaFormat()
-            val channel = receivingPortToChannel(cameraCapture.compressedDataChannel())
-            rtc.addVideoStream(mediaFormat.get().toRTCFormat(), channel)
-        }
-
-        onDispose {
-            scope.launch {
-                cameraCapture.stop()
-                cameraCapture.release()
-                rtc.closePeerConnection()
-            }
-        }
-    }
 
     ConstraintLayout(modifier = Modifier.fillMaxSize()) {
-        // preview frame
-        if (currentPreviewFrame.value!= null) {
-            Image(
-                bitmap = currentPreviewFrame.value!!,
-                contentDescription = "Camera frame",
-                modifier = Modifier.fillMaxSize()
-            )
-        }
-
+        val localPeerView = createRef()
+        rtcPhone.LocalPeerView(modifier = Modifier.fillMaxSize().constrainAs(localPeerView) {
+            centerHorizontallyTo(parent)
+            bottom.linkTo(parent.bottom, 16.dp)
+        })
 
         val withPeer = createRef()
         Text(
@@ -505,8 +402,9 @@ fun InCallScreen(remotePeer: Peer) {
         val closeButton = createRef()
         IconButton(onClick = {
             scope.launch {
-                signalClient.postCloseSession()
-                screenState.value = ScreenState.ConnectedState
+                withContext(Dispatchers.IO) {
+                    rtcPhone.endCall()
+                }
             }
         }, modifier = Modifier.constrainAs(closeButton) {
             bottom.linkTo(parent.bottom, 16.dp)
@@ -521,7 +419,6 @@ fun InCallScreen(remotePeer: Peer) {
 }
 
 
-
 private fun CoroutineScope.receivingPortToChannel(port: ReceivingPort<Pair<ByteArray, BufferInfo>>): Channel<Sample> {
     val channel = Channel<Sample>(Channel.BUFFERED)
     launch {
@@ -534,8 +431,10 @@ private fun CoroutineScope.receivingPortToChannel(port: ReceivingPort<Pair<ByteA
                         flag = second.flags
                     )
                 })
-            } catch (_: Exception) { }
+            } catch (_: Exception) {
+            }
         }
+        Log.d("RTCCallSample", "sample channel closed")
         channel.close()
     }
     return channel

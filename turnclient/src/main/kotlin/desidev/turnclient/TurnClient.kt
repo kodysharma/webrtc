@@ -76,6 +76,7 @@ class TurnClient(
 
     suspend fun createAllocation(): Result<List<ICECandidate>> {
         return try {
+            if (allocation!= null) { throw IllegalStateException("Allocation already exists") }
             val allocateRequest = allocateRequestBuilder.setNonce(nonce).setRealm(realm).build()
             val response = socketHandler.sendMessage(allocateRequest)
 
@@ -233,10 +234,8 @@ class TurnClient(
                     438 -> {
                         nonce = response.attributes.find { it.type == AttributeType.NONCE.type }
                             ?.getValueAsString()
-
                         refresh(lifetime)
                     }
-
                     else -> {
                         throw IOException("Refresh failed with error code: $errorValue")
                     }
@@ -326,7 +325,11 @@ class TurnClient(
             channelData.put(data) // application data
 
             val packet = DatagramPacket(channelData.array(), channelData.capacity())
-            socketHandler.sendPacket(packet)
+            try {
+                socketHandler.sendPacket(packet)
+            } catch (ex: Exception) {
+                ex.printStackTrace()
+            }
         }
 
         override fun equals(other: Any?): Boolean {
@@ -520,8 +523,12 @@ class TurnClient(
         }
 
         fun sendKeepAlive() {
-            val packet = DatagramPacket(byteArrayOf(0, 0), 2)
-            socket.send(packet)
+            try {
+                val packet = DatagramPacket(byteArrayOf(0, 0), 2)
+                socket.send(packet)
+            } catch (ex: Exception) {
+                ex.printStackTrace()
+            }
         }
 
         fun cancel() = synchronized(Unit) {
