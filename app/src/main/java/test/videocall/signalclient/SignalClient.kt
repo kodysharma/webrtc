@@ -1,5 +1,6 @@
 package test.videocall.signalclient
 
+import android.util.Log
 import com.google.gson.GsonBuilder
 import com.google.gson.JsonObject
 import com.google.gson.reflect.TypeToken
@@ -15,20 +16,19 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
 
 class SignalClient {
-    private lateinit var rpcClient: RPCClient
-    private val gson = GsonBuilder().create()
+    companion object {
+        val TAG: String? = SignalClient::class.simpleName
+    }
 
+    private val gson = GsonBuilder().create()
     private val mutableEventFlow: MutableSharedFlow<Any> = MutableSharedFlow()
+    private val rpcClient = DefaultRPCClient()
+
     val eventFlow: SharedFlow<Any> = mutableEventFlow
+    val connectionStateFlow = rpcClient.rpcConnectionEventFlow
 
     suspend fun connect(url: String) {
-        val socket = HttpClient(CIO) {
-            install(WebSockets) {
-                contentConverter = GsonWebsocketContentConverter()
-            }
-        }.webSocketSession(url)
-
-        rpcClient = RPCClient.withSocket(socket)
+        rpcClient.connect(url)
         addSubscription()
     }
 
@@ -36,18 +36,22 @@ class SignalClient {
     private suspend fun addSubscription() {
         rpcClient.subscribeEvent(
             EventSubscriber("offer") {
+                Log.i(TAG, "Got offer event: $it")
                 val offerEvent = gson.fromJson(it, OfferEvent::class.java)
                 GlobalScope.launch { mutableEventFlow.emit(offerEvent) }
             },
             EventSubscriber("answer") {
+                Log.i(TAG, "Got answer event: $it")
                 val answerEvent = gson.fromJson(it, AnswerEvent::class.java)
                 GlobalScope.launch { mutableEventFlow.emit(answerEvent) }
             },
             EventSubscriber("offer-cancelled") {
+                Log.i(TAG, "Got offer-cancelled event: $it")
                 val offerCancelledEvent = gson.fromJson(it, OfferCancelledEvent::class.java)
                 GlobalScope.launch { mutableEventFlow.emit(offerCancelledEvent) }
             },
             EventSubscriber("session-closed") {
+                Log.i(TAG, "Got session-closed event: $it")
                 GlobalScope.launch {
                     mutableEventFlow.emit(SessionClosedEvent)
                 }

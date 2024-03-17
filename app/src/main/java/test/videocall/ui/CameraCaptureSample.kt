@@ -25,17 +25,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import test.videocall.MediaMuxerWrapper
 import test.videocall.R
 import java.nio.ByteBuffer
-import kotlin.time.Duration.Companion.seconds
 
 @Composable
 fun CameraCaptureSample(modifier: Modifier = Modifier) {
@@ -108,7 +107,8 @@ fun CameraCaptureSample(modifier: Modifier = Modifier) {
                 Image(
                     bitmap = it.asImageBitmap(),
                     contentDescription = "Camera frame",
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
                 )
             }
 
@@ -146,5 +146,7 @@ fun CameraCaptureSample(modifier: Modifier = Modifier) {
         }
     }
 }
+
+
 
 

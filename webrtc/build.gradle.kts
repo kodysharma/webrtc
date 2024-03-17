@@ -54,11 +54,13 @@ dependencies {
     implementation(libs.kotlinx.serialization.protobuf)
 
     implementation(platform(libs.androidx.compose.bom))
+    implementation(libs.androidx.compose.foundation)
     // dependency bundle
     implementation(libs.bundles.webrtc.dep.bundle)
     coreLibraryDesugaring(libs.coreLibraryDesugaring)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation("androidx.test:rules:1.5.0")
     androidTestImplementation(libs.androidx.espresso.core)
 
 }

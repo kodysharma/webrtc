@@ -32,7 +32,7 @@ import kotlin.coroutines.suspendCoroutine
 
 interface CameraCapture {
     val state: State
-    val selectedCamera: SelectedCamera
+    val selectedCamera: CameraDeviceInfo
     suspend fun start()
     suspend fun stop()
     suspend fun release()
@@ -48,6 +48,7 @@ interface CameraCapture {
     }
 
     sealed class Quality(val width: Int, val height: Int) {
+        data object Lowest : Quality(480, 360)
         data object Low : Quality(640, 480)
         data object Medium : Quality(1280, 720)
         data object High : Quality(1920, 1080)
@@ -59,12 +60,20 @@ interface CameraCapture {
 }
 
 
-data class SelectedCamera(
+data class CameraDeviceInfo(
     val lensFacing: CameraLensFacing,
     val id: String
 )
 
+
+/**
+ * There is a Surface between the camera and encoder.
+ * And a ImageReader to provide the preview frames as Image objects
+ */
 class CameraCaptureImpl(context: Context) : CameraCapture {
+    private val _handlerThread = HandlerThread("CameraHandler").apply { start() }
+    private val _handler = Handler(_handlerThread.looper)
+
     private val stateLock = Mutex()
     private var _state = State.INACTIVE
         set(value) {
@@ -74,7 +83,7 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
 
     override val state: State
         get() = _state
-    private val resolution: CameraCapture.Quality = CameraCapture.Quality.Low
+    private val resolution: CameraCapture.Quality = CameraCapture.Quality.Lowest
     private val _cameraManager: CameraManager =
         context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
 
@@ -91,7 +100,7 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
                         image.close()
                     }
                 }
-            }, null)
+            }, _handler)
         }
 
     private val _encoderSurface: Surface
@@ -99,7 +108,7 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
     private val _encoder: desidev.rtc.media.codec.VideoEncoder =
         desidev.rtc.media.codec.Codec.createVideoEncoder()
 
-    private val _cameras: List<SelectedCamera> = _cameraManager.cameraIdList.map { id ->
+    private val _cameras: List<CameraDeviceInfo> = _cameraManager.cameraIdList.map { id ->
         val characteristics = _cameraManager.getCameraCharacteristics(id)
         characteristics.get(CameraCharacteristics.LENS_FACING).run {
             val lensFacing = when (this) {
@@ -108,22 +117,18 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
                 CameraCharacteristics.LENS_FACING_EXTERNAL -> CameraLensFacing.EXTERNAL
                 else -> throw IllegalArgumentException("Unknown lens facing")
             }
-            SelectedCamera(lensFacing, id)
+            CameraDeviceInfo(lensFacing, id)
         }
     }
 
-
-    //    private val _scope = CoroutineScope(Dispatchers.Default)
-    private val _handlerThread = HandlerThread("CameraHandler").apply { start() }
-    private val _handler = Handler(_handlerThread.looper)
 
     private lateinit var _sessionCloseDeferred: CompletableDeferred<Unit>
     private lateinit var _cameraCloseDeferred: CompletableDeferred<Unit>
 
     private lateinit var _session: CameraCaptureSession
 
-    private var currentCamera: SelectedCamera = _cameras.first()
-    override val selectedCamera: SelectedCamera
+    private var currentCamera: CameraDeviceInfo = _cameras.find { it.lensFacing == CameraLensFacing.FRONT }!!
+    override val selectedCamera: CameraDeviceInfo
         get() = currentCamera
 
     init {
@@ -136,7 +141,7 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
                 MediaFormat.KEY_COLOR_FORMAT,
                 MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
             )
-            setInteger(MediaFormat.KEY_BIT_RATE, 3_000_000)
+            setInteger(MediaFormat.KEY_BIT_RATE, 200000)
             setInteger(MediaFormat.KEY_FRAME_RATE, 30)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
         }

@@ -4,48 +4,62 @@ import android.util.Log
 import com.google.gson.JsonArray
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.websocket.*
+import io.ktor.serialization.gson.GsonWebsocketContentConverter
 import io.ktor.util.collections.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import java.util.*
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
 
+sealed class RPCConnectionEvent {
+    data object OnConnect: RPCConnectionEvent()
+    data object OnDisconnect: RPCConnectionEvent()
+}
+
 interface RPCClient {
+    val rpcConnectionEventFlow: SharedFlow<RPCConnectionEvent>
     suspend fun methodCall(name: String, params: JsonObject): JsonObject
     suspend fun subscribeEvent(vararg subscriber: EventSubscriber): JsonObject
     suspend fun dispose()
-
-    companion object {
-        fun withSocket(socket: DefaultClientWebSocketSession): RPCClient {
-            return DefaultRPCClient(socket)
-        }
-    }
 }
 
 
-class DefaultRPCClient(private val session: DefaultClientWebSocketSession) : RPCClient {
+class DefaultRPCClient : RPCClient {
     private val scope = CoroutineScope(Dispatchers.IO)
-
     private val methodResultDispatch: MutableMap<Any, (JsonObject) -> Unit> = ConcurrentMap()
     private val eventDispatch: MutableMap<Any, (JsonElement) -> Unit> = ConcurrentMap()
+    private val mutRPCConnectionEventFlow: MutableSharedFlow<RPCConnectionEvent> = MutableSharedFlow()
 
-    init {
+    override val rpcConnectionEventFlow: SharedFlow<RPCConnectionEvent> = mutRPCConnectionEventFlow.asSharedFlow()
+    private var socketSession: DefaultClientWebSocketSession? = null
+
+    suspend fun connect(url: String) {
+        socketSession = HttpClient(CIO) {
+            install(WebSockets) {
+                contentConverter = GsonWebsocketContentConverter()
+            }
+        }.webSocketSession(url)
+        mutRPCConnectionEventFlow.emit(RPCConnectionEvent.OnConnect)
         dispatchResult()
     }
 
     override suspend fun methodCall(name: String, params: JsonObject): JsonObject {
-        val session = session
         val id = UUID.randomUUID().toString()
         val methodCall = JsonObject().apply {
             addProperty("method", name)
             addProperty("id", id)
             add("params", params)
         }
-        session.sendSerialized(methodCall)
+        this.socketSession?.sendSerialized(methodCall)
         return suspendCoroutine { cont ->
             methodResultDispatch[id] = { json: JsonObject ->
                 cont.resume(json)
@@ -54,7 +68,8 @@ class DefaultRPCClient(private val session: DefaultClientWebSocketSession) : RPC
     }
 
     override suspend fun subscribeEvent(vararg subscriber: EventSubscriber): JsonObject {
-        val session = session
+        val session = socketSession ?: throw IllegalStateException("Not connected")
+
         val subscriptions = JsonArray()
         for (sub in subscriber) {
             val subscriptionId = UUID.randomUUID().toString()
@@ -95,10 +110,9 @@ class DefaultRPCClient(private val session: DefaultClientWebSocketSession) : RPC
         scope.launch {
             while (true) {
                 try {
-                    val jsonObject = session.receiveDeserialized<JsonObject>()
+                    val jsonObject = socketSession?.receiveDeserialized<JsonObject>() ?: break
                     val id = jsonObject.get("id").asString
-
-                    Log.d(TAG, "received object: $jsonObject")
+//                    Log.d(TAG, "received object: $jsonObject")
 
                     val objectType = jsonObject.get("type").asString
                     if (objectType == "method-return") {
@@ -130,13 +144,14 @@ class DefaultRPCClient(private val session: DefaultClientWebSocketSession) : RPC
                     break
                 }
             }
+            mutRPCConnectionEventFlow.emit(RPCConnectionEvent.OnDisconnect)
             methodResultDispatch.clear()
         }
     }
 
 
     companion object {
-        val TAG = DefaultRPCClient::class.java.simpleName
+        val TAG: String = DefaultRPCClient::class.java.simpleName
     }
 }
 

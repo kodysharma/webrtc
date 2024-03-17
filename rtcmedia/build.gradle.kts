@@ -31,6 +31,14 @@ android {
     kotlinOptions {
         jvmTarget = "1.8"
     }
+    composeOptions {
+        val kcev = libs.versions.kotlinCompilerExtensionVersion
+        kotlinCompilerExtensionVersion = kcev.get()
+    }
+
+    buildFeatures {
+        compose = true
+    }
 }
 
 dependencies {
@@ -39,6 +47,10 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
     implementation(libs.material)
+
+    implementation(platform(libs.androidx.compose.bom))
+    implementation(libs.androidx.compose.foundation)
+
     implementation(project(":utility"))
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

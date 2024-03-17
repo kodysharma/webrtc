@@ -15,8 +15,6 @@ data class RTCMessage(
     val videoSample: Sample? = null,
     val control: Control? = null,
 ) {
-
-
     @Serializable
     data class Control(
         val txId: Int = numberSeqGenerator.next(),
@@ -83,9 +81,9 @@ data class RTCMessage(
 
     @Serializable
     data class Sample(
-        val timeStamp: Long,
-        val flag: Int,
-        val sample: ByteArray
+        val ptsUs: Long,
+        val flags: Int,
+        val buffer: ByteArray
     ) {
         override fun equals(other: Any?): Boolean {
             if (this === other) return true
@@ -93,15 +91,15 @@ data class RTCMessage(
 
             other as Sample
 
-            if (timeStamp != other.timeStamp) return false
-            if (flag != other.flag) return false
-            return sample.contentEquals(other.sample)
+            if (ptsUs != other.ptsUs) return false
+            if (flags != other.flags) return false
+            return buffer.contentEquals(other.buffer)
         }
 
         override fun hashCode(): Int {
-            var result = timeStamp.hashCode()
-            result = 31 * result + flag
-            result = 31 * result + sample.contentHashCode()
+            var result = ptsUs.hashCode()
+            result = 31 * result + flags
+            result = 31 * result + buffer.contentHashCode()
             return result
         }
     }

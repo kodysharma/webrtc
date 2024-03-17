@@ -47,8 +47,8 @@ class DefaultRtcClient(
     private var trackListener: TrackListener? = null
 
     // remote peer media stream formats
-    private var inAudioFormat: RTCMessage.Format? = null
-    private var inVideoFormat: RTCMessage.Format? = null
+    private var remoteAudioFormat: RTCMessage.Format? = null
+    private var remoteVideoFormat: RTCMessage.Format? = null
 
     private var messageAck = MessageAcknowledgement()
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -104,13 +104,17 @@ class DefaultRtcClient(
                 val message = ProtoBuf.decodeFromByteArray<RTCMessage>(bytes)
                 when {
                     message.audioSample != null -> {
-                        Log.d(TAG, "Received audio sample: $message")
-                        trackListener?.onNextAudioSample(message.audioSample)
+//                        Log.d(TAG, "Received audio sample: $message")
+                        if (remoteAudioFormat != null) {
+                            trackListener?.onNextAudioSample(message.audioSample)
+                        }
                     }
 
                     message.videoSample != null -> {
-                        Log.d(TAG, "Received video sample: $message")
-                        trackListener?.onNextVideoSample(message.videoSample)
+//                        Log.d(TAG, "Received video sample: $message")
+                        if (remoteVideoFormat != null) {
+                            trackListener?.onNextVideoSample(message.videoSample)
+                        }
                     }
 
                     message.control != null -> {
@@ -145,13 +149,22 @@ class DefaultRtcClient(
         check(format.map.containsKey(MediaFormat.KEY_MIME)) { "Format does not have mimetype" }
         when (id) {
             AUDIO_STREAM_ID -> {
-                inAudioFormat = format
+                remoteAudioFormat = format
                 trackListener?.onAudioStreamAvailable(format)
             }
 
             VIDEO_STREAM_ID -> {
-                inVideoFormat = format
+                if (remoteVideoFormat != null) {
+                    if (remoteVideoFormat == format) {
+                        Log.i(TAG, "Video stream already enabled")
+                        return
+                    } else {
+                        Log.i(TAG, "Video stream already enabled, disabling")
+                        trackListener?.onVideoStreamDisable()
+                    }
+                }
                 trackListener?.onVideoStreamAvailable(format)
+                remoteVideoFormat = format
             }
         }
     }
@@ -159,13 +172,17 @@ class DefaultRtcClient(
     private fun onStreamDisable(id: Int) {
         when (id) {
             AUDIO_STREAM_ID -> {
-                inAudioFormat = null
-                trackListener?.onAudioStreamDisable()
+                if (remoteAudioFormat != null) {
+                    remoteAudioFormat = null
+                    trackListener?.onAudioStreamDisable()
+                }
             }
 
             VIDEO_STREAM_ID -> {
-                inVideoFormat = null
-                trackListener?.onVideoStreamDisable()
+                if (remoteVideoFormat != null) {
+                    remoteVideoFormat = null
+                    trackListener?.onVideoStreamDisable()
+                }
             }
         }
     }
@@ -223,7 +240,7 @@ class DefaultRtcClient(
             )
             Log.d(TAG, "Video stream enabled")
 
-            sampleFlow.collect{
+            sampleFlow.collect {
                 dataChannel?.sendMessage(
                     ProtoBuf.encodeToByteArray(
                         RTCMessage(videoSample = it)

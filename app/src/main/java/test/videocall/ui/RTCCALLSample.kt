@@ -1,7 +1,5 @@
 package test.videocall.ui
 
-import android.graphics.Bitmap
-import android.media.Image
 import android.media.MediaCodec.BufferInfo
 import android.util.Log
 import androidx.compose.animation.AnimatedContent
@@ -52,14 +50,22 @@ import desidev.rtc.media.ReceivingPort
 import desidev.rtc.media.camera.CameraCaptureImpl
 import desidev.videocall.service.rtcmsg.RTCMessage.Sample
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import test.videocall.R
 import test.videocall.RTCPhone
+import test.videocall.RTCPhone.CallState
 import test.videocall.signalclient.Peer
 
+
+private const val TAG = "RtcPhoneSample"
+
+sealed class Screen() {
+    data object Home : Screen()
+    data object Users : Screen()
+    data object CallScreen : Screen()
+}
 
 @Composable
 fun RTCCAllSample() {
@@ -67,12 +73,13 @@ fun RTCCAllSample() {
     val scope = rememberCoroutineScope()
     var peerName by remember { mutableStateOf("") }
     val rtcPhone = remember { RTCPhone(context) }
-    val phoneState by rtcPhone.phoneStateFlow.collectAsState()
+    val phoneState by rtcPhone.callStateFlow.collectAsState()
     val cameraEnable by rtcPhone.cameraStateFlow.collectAsState()
+    var currentScreen by remember { mutableStateOf<Screen>(Screen.Home) }
 
     LaunchedEffect(Unit) {
-        rtcPhone.phoneStateFlow.collect {
-            if (it is RTCPhone.State.InSession || it is RTCPhone.State.OutgoingCall || it is RTCPhone.State.IncomingCall) {
+        rtcPhone.callStateFlow.collect {
+            if (it is CallState.InSession || it is CallState.CallingToPeer || it is CallState.IncomingCall) {
                 if (!rtcPhone.cameraStateFlow.value) {
                     rtcPhone.enableCamera()
                 }
@@ -83,83 +90,75 @@ fun RTCCAllSample() {
             }
         }
     }
+    LaunchedEffect(Unit) {
+        rtcPhone.errorSharedFlow.collect {
+            Log.e(TAG, it.message, it.cause)
+        }
+    }
+    LaunchedEffect(Unit) {
+        launch {
+            rtcPhone.connectionStateFlow.collect {
+                currentScreen = when (it) {
+                    RTCPhone.ConnectionState.Connected -> {
+                        Screen.Users
+                    }
 
-    Surface {
-        AnimatedContent(
-            targetState = phoneState,
-            label = "Screen State"
-        ) { state ->
-            when (state) {
-                RTCPhone.State.OnLine -> {
-                    ConnectedScreen(
-                        peerLoader = {
-                            withContext(Dispatchers.IO) {
-                                rtcPhone.getPeers()
-                            }
-                        },
-                        onCallToPeer = { peer ->
-                            scope.launch {
-                                withContext(Dispatchers.IO) {
-                                    rtcPhone.makeCall(peer)
-                                }
-                            }
-                        }
-                    )
-                }
-
-                is RTCPhone.State.OutgoingCall -> {
-                    OutGoingCallScreen(
-                        receiverPeer = state.receiver,
-                        onEndCallClicked = { scope.launch { withContext(Dispatchers.IO) { rtcPhone.endCall() } } },
-                        rtcPhone = rtcPhone
-                    )
-                }
-
-                is RTCPhone.State.IncomingCall -> {
-                    IncomingCallScreen(
-                        sender = state.sender,
-                        onAcceptClicked = {
-                            scope.launch {
-                                withContext(Dispatchers.IO) {
-                                    rtcPhone.acceptCall(state.sender)
-                                }
-                            }
-                        },
-                        onRejectClicked = {
-                            scope.launch {
-                                withContext(Dispatchers.IO) {
-                                    rtcPhone.rejectCall(state.sender)
-                                }
-                            }
-                        }
-                    )
-                }
-
-                is RTCPhone.State.InSession -> {
-                    InCallScreen(remotePeer = state.peer, rtcPhone = rtcPhone)
-                }
-
-                RTCPhone.State.OffLine -> {
-                    OfflineScreen(
-                        peerName = peerName,
-                        onPeerNameChanged = { peerName = it },
-                        onConnectClicked = {
-                            scope.launch {
-                                withContext(Dispatchers.IO) {
-                                    rtcPhone.goOnline(peerName)
-                                }
-                            }
-                        }
-                    )
+                    RTCPhone.ConnectionState.DisConnected -> {
+                        Screen.Home
+                    }
                 }
             }
         }
+        launch {
+            rtcPhone.callStateFlow.filter { it !is CallState.NoSession }.collect {
+                if (rtcPhone.connectionStateFlow.value == RTCPhone.ConnectionState.Connected)
+                    currentScreen = Screen.CallScreen
+            }
+        }
+    }
+
+
+    AnimatedContent(targetState = currentScreen, label = "") { screen ->
+        when (screen) {
+            is Screen.Home -> {
+                HomeScreen(
+                    peerName = peerName,
+                    onPeerNameChanged = { peerName = it },
+                    onConnectClicked = {
+                        rtcPhone.goOnline(
+                            peerName,
+                            onSuccess = { Log.i(TAG, "Connected to webserver") },
+                            onFailure = { Log.e(TAG, "Failed to connect", it) }
+                        )
+                    })
+            }
+
+            is Screen.Users -> {
+                UsersScreen(
+                    peerLoader = { rtcPhone.getPeers() },
+                    onCallToPeer = { peer ->
+                        rtcPhone.makeCall(
+                            peer,
+                            onSuccess = { },
+                            onFailure = { }
+                        )
+                    }
+                )
+            }
+
+            is Screen.CallScreen -> {
+                CallScreen(rtcPhone = rtcPhone, onNavigateBack = {
+                    currentScreen = Screen.Users
+                })
+            }
+        }
+
     }
 }
 
 
 @Composable
-fun OfflineScreen(
+fun HomeScreen(
     peerName: String, onPeerNameChanged: (String) -> Unit, onConnectClicked: () -> Unit
 ) {
     Column(
@@ -181,7 +180,7 @@ fun OfflineScreen(
 
 
 @Composable
-fun ConnectedScreen(
+fun UsersScreen(
     peerLoader: suspend () -> List<Peer>,
     onCallToPeer: (Peer) -> Unit,
 ) {
@@ -259,6 +258,59 @@ fun ConnectedScreen(
     }
 }
 
+sealed class CallScreenState {
+    data class OutGoingCall(val receiver: Peer) : CallScreenState()
+    data class IncomingCall(val sender: Peer) : CallScreenState()
+    data class InCall(val peer: Peer) : CallScreenState()
+}
+
+private fun callScreenState(rtcPhone: RTCPhone): CallScreenState =
+    when (val callState = rtcPhone.callStateFlow.value) {
+        is CallState.IncomingCall -> CallScreenState.IncomingCall(callState.sender)
+        is CallState.CallingToPeer -> CallScreenState.OutGoingCall(callState.receiver)
+        is CallState.InSession -> CallScreenState.InCall(callState.peer)
+        else -> throw UnsupportedOperationException("Cannot convert call state to CallScreenState: $callState")
+    }
+
+@Composable
+fun CallScreen(rtcPhone: RTCPhone, onNavigateBack: () -> Unit) {
+    var callScreenState by remember { mutableStateOf<CallScreenState>(callScreenState(rtcPhone)) }
+
+    LaunchedEffect(Unit) {
+        rtcPhone.callStateFlow.filter { it is RTCPhone.CallState.NoSession }
+            .collect { onNavigateBack() }
+    }
+
+    LaunchedEffect(Unit) {
+        rtcPhone.callStateFlow.filter { it !is RTCPhone.CallState.NoSession }.collect {
+            callScreenState = callScreenState(rtcPhone)
+        }
+    }
+
+    Surface(modifier = Modifier.fillMaxSize()) {
+        AnimatedContent(targetState = callScreenState, label = "") { state ->
+            when (state) {
+                is CallScreenState.InCall -> InCallScreen(
+                    remotePeer = state.peer,
+                    rtcPhone = rtcPhone
+                )
+
+                is CallScreenState.IncomingCall -> IncomingCallScreen(
+                    sender = state.sender,
+                    onAcceptClicked = { rtcPhone.acceptCall() },
+                    onRejectClicked = { rtcPhone.rejectCall() }
+                )
+
+                is CallScreenState.OutGoingCall -> OutGoingCallScreen(
+                    receiverPeer = state.receiver,
+                    onEndCallClicked = { rtcPhone.endCall({}, {}) },
+                    rtcPhone = rtcPhone
+                )
+            }
+        }
+    }
+}
+
 @Composable
 fun OutGoingCallScreen(
     receiverPeer: Peer,
@@ -268,10 +320,12 @@ fun OutGoingCallScreen(
     Surface(modifier = Modifier.fillMaxSize()) {
         ConstraintLayout {
             val localPeerView = createRef()
-            rtcPhone.LocalPeerView(modifier = Modifier.fillMaxSize().constrainAs(localPeerView) {
-                centerHorizontallyTo(parent)
-                bottom.linkTo(parent.bottom, 16.dp)
-            })
+            rtcPhone.LocalPeerView(modifier = Modifier
+                .fillMaxSize()
+                .constrainAs(localPeerView) {
+                    centerHorizontallyTo(parent)
+                    bottom.linkTo(parent.bottom, 16.dp)
+                })
 
             val name = createRef()
             Column(
@@ -375,41 +429,37 @@ fun InCallScreen(remotePeer: Peer, rtcPhone: RTCPhone) {
     val currentPreviewFrame = remember { mutableStateOf<ImageBitmap?>(null) }
     val yuvToRgbConverter = remember { desidev.utility.yuv.YuvToRgbConverter(context) }
 
-    fun Image.toBitmap(): Bitmap {
-        val outputBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        yuvToRgbConverter.yuvToRgb(this, outputBitmap)
-        return outputBitmap
-    }
-
-
     ConstraintLayout(modifier = Modifier.fillMaxSize()) {
-        val localPeerView = createRef()
-        rtcPhone.LocalPeerView(modifier = Modifier.fillMaxSize().constrainAs(localPeerView) {
-            centerHorizontallyTo(parent)
-            bottom.linkTo(parent.bottom, 16.dp)
-        })
+        Column(modifier = Modifier.fillMaxSize()) {
+            rtcPhone.LocalPeerView(modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth())
+            rtcPhone.RemotePeerView(modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth())
+        }
+
 
         val withPeer = createRef()
         Text(
             text = "Call with ${remotePeer.name}",
-            style = MaterialTheme.typography.headlineMedium,
-            modifier = Modifier.constrainAs(withPeer) {
-                centerHorizontallyTo(parent)
-                top.linkTo(parent.top, 40.dp)
-            }
+            style = MaterialTheme.typography.labelLarge,
+            modifier = Modifier
+                .constrainAs(withPeer) {
+                    start.linkTo(parent.start)
+                    top.linkTo(parent.top)
+                }
+                .padding(16.dp)
         )
 
         val closeButton = createRef()
-        IconButton(onClick = {
-            scope.launch {
-                withContext(Dispatchers.IO) {
-                    rtcPhone.endCall()
-                }
+        IconButton(
+            onClick = { rtcPhone.endCall() },
+            modifier = Modifier.constrainAs(closeButton) {
+                bottom.linkTo(parent.bottom, 16.dp)
+                end.linkTo(parent.end, 16.dp)
             }
-        }, modifier = Modifier.constrainAs(closeButton) {
-            bottom.linkTo(parent.bottom, 16.dp)
-            end.linkTo(parent.end, 16.dp)
-        }) {
+        ) {
             Icon(
                 imageVector = Icons.Default.Close,
                 contentDescription = "Close",
@@ -426,9 +476,9 @@ private fun CoroutineScope.receivingPortToChannel(port: ReceivingPort<Pair<ByteA
             try {
                 channel.send(port.receive().run {
                     Sample(
-                        timeStamp = second.presentationTimeUs,
-                        sample = first,
-                        flag = second.flags
+                        ptsUs = second.presentationTimeUs,
+                        buffer = first,
+                        flags = second.flags
                     )
                 })
             } catch (_: Exception) {

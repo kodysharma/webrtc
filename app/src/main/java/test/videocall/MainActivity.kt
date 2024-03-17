@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
 import androidx.compose.ui.Modifier
 import test.videocall.ui.CameraCaptureSample
+import test.videocall.ui.CameraToVideoPlayer
 import test.videocall.ui.RTCCAllSample
 import kotlin.system.exitProcess
 
@@ -25,7 +26,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             Scaffold {
                 Box(modifier = Modifier.padding(it)) {
-                    RTCCAllSample()
+                    CameraToVideoPlayer()
                 }
             }
         }
