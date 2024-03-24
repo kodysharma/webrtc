@@ -65,8 +65,8 @@ class YuvByteBuffer(image: Image, dstBuffer: ByteBuffer? = null) {
             dstBuffer == null || dstBuffer.capacity() < size ||
             dstBuffer.isReadOnly || !dstBuffer.isDirect
         ) {
-            ByteBuffer.allocateDirect(size) }
-        else {
+            ByteBuffer.allocateDirect(size)
+        } else {
             dstBuffer
         }
         buffer.rewind()
@@ -160,8 +160,8 @@ class YuvByteBuffer(image: Image, dstBuffer: ByteBuffer? = null) {
         return duplicate.slice()
     }
 
-    private class ImageWrapper(image:Image) {
-        val width= image.width
+    private class ImageWrapper(image: Image) {
+        val width = image.width
         val height = image.height
         val y = PlaneWrapper(width, height, image.planes[0])
         val u = PlaneWrapper(width / 2, height / 2, image.planes[1])
@@ -175,8 +175,8 @@ class YuvByteBuffer(image: Image, dstBuffer: ByteBuffer? = null) {
             }
             require(u.pixelStride == v.pixelStride && u.rowStride == v.rowStride) {
                 "U and V planes must have the same pixel and row strides " +
-                "but got pixel=${u.pixelStride} row=${u.rowStride} for U " +
-                "and pixel=${v.pixelStride} and row=${v.rowStride} for V"
+                        "but got pixel=${u.pixelStride} row=${u.rowStride} for U " +
+                        "and pixel=${v.pixelStride} and row=${v.rowStride} for V"
             }
             require(u.pixelStride == 1 || u.pixelStride == 2) {
                 "Supported" + " pixel strides for U and V planes are 1 and 2"
@@ -272,7 +272,8 @@ fun yuv420ToBitmap(image: Image): Bitmap {
             // positioned in each byte of a single 4 byte integer
             // [AAAAAAAARRRRRRRRGGGGGGGGBBBBBBBB]
             val argbIndex = y * imageWidth + x
-            argbArray[argbIndex] = (255 shl 24) or ((r and 255) shl 16) or ((g and 255) shl 8) or (b and 255)
+            argbArray[argbIndex] =
+                (255 shl 24) or ((r and 255) shl 16) or ((g and 255) shl 8) or (b and 255)
         }
     }
 

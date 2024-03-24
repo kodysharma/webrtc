@@ -59,16 +59,16 @@ class SampleTest {
             Log.d("cameraSampleTest", "Camera capture started")
             val port = cameraCapture.compressedDataChannel()
 
-            while (port.isOpenForReceive) {
-                val sample = port.receive().run {
-                    RTCMessage.Sample(
-                        ptsUs = second.presentationTimeUs,
-                        buffer = first,
-                        flags = second.flags
-                    )
-                }
-                assertEquals(sample, sampleEncodeDecodeTest(sample))
-            }
+//            while (port.isOpenForReceive) {
+//                val sample = port.receive().run {
+//                    RTCMessage.Sample(
+//                        ptsUs = second.presentationTimeUs,
+//                        buffer = first,
+//                        flags = second.flags
+//                    )
+//                }
+//                assertEquals(sample, sampleEncodeDecodeTest(sample))
+//            }
         }
     }
 

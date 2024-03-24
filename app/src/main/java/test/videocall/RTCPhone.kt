@@ -33,6 +33,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.consumeEach
 import kotlinx.coroutines.channels.trySendBlocking
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -40,6 +41,8 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -94,14 +97,17 @@ class RTCPhone(context: Context) {
 
     private val rtcTrackListener = object : TrackListener {
         override fun onVideoStreamAvailable(videoFormat: RTCMessage.Format) {
-            Log.d(TAG, "onVideoStreamAvailable: $videoFormat")
-            remoteVideoPlayerState.value = VideoPlayer(videoFormat.toMediaFormat()).also { it.play() }
+            Log.i(TAG, "onVideoStreamAvailable: $videoFormat")
+            remoteVideoPlayerState.value =
+                VideoPlayer(videoFormat.toMediaFormat()).also { it.play() }
         }
 
         override fun onAudioStreamAvailable(audioFormat: RTCMessage.Format) {
         }
 
         override fun onNextVideoSample(videoSample: Sample) {
+            Log.i(TAG, "onNextVideoSample: $videoSample")
+
             remoteVideoPlayerState.value?.let {
                 it.inputData(buffer = videoSample.buffer,
                     info = BufferInfo().apply {
@@ -118,9 +124,10 @@ class RTCPhone(context: Context) {
         }
 
         override fun onVideoStreamDisable() {
-            remoteVideoPlayerState.value?.let {
-                it.stop()
-                remoteVideoPlayerState.value = null
+            scope.launch {
+                remoteVideoPlayerState.value?.let {
+                    remoteVideoPlayerState.value = null
+                }
             }
         }
 
@@ -253,24 +260,16 @@ class RTCPhone(context: Context) {
 
     private suspend fun sendCaptureDataToRemotePeer() {
         val format = withContext(Dispatchers.IO) {
-            cameraCapture.getMediaFormat().get()
+            cameraCapture.getMediaFormat().await()
         }.toRTCFormat()
 
-        val cameraOut = channelFlow<Sample> {
-            val port = cameraCapture.compressedDataChannel()
-            while (port.isOpenForReceive && isActive) {
-                try {
-                    send(port.receive().run {
-                        Sample(
-                            ptsUs = second.presentationTimeUs, buffer = first, flags = second.flags
-                        )
-                    })
-                } catch (ex: Exception) {
-                    ex.printStackTrace()
-                }
+        rtc.addStream(format, cameraCapture.compressedDataChannel().receiveAsFlow().map {
+            it.run {
+                Sample(
+                    ptsUs = second.presentationTimeUs, buffer = first, flags = second.flags
+                )
             }
-        }
-        rtc.addStream(format, cameraOut)
+        })
     }
 
     @Composable

@@ -205,17 +205,17 @@ class DefaultRtcClient(
         tryDeleteAllocation()
     }
 
-    override fun addStream(format: RTCMessage.Format, channel: Flow<RTCMessage.Sample>) {
+    override fun addStream(format: RTCMessage.Format, sampleFlow: Flow<RTCMessage.Sample>) {
         val mimeType = format.map[MediaFormat.KEY_MIME]?.string
             ?: throw IllegalArgumentException("Unknown media type")
 
         when {
             mimeType.startsWith("video/") -> {
-                addVideoStream(format, channel)
+                addVideoStream(format, sampleFlow)
             }
 
             mimeType.startsWith("audio/") -> {
-                addAudioStream(format, channel)
+                addAudioStream(format, sampleFlow)
             }
         }
     }

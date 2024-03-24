@@ -59,7 +59,6 @@ class VideoEncoder : Codec {
         }
     }
 
-
     override fun mediaFormat(): Future<MediaFormat> {
         return _outputFormatFuture
     }

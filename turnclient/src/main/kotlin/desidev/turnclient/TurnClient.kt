@@ -22,6 +22,7 @@ import java.io.IOException
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.SocketAddress
 import java.net.SocketException
 import java.net.SocketTimeoutException
@@ -34,7 +35,7 @@ import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
 class TurnClient(
-    private val serverAddress: SocketAddress,
+    private val serverAddress: InetSocketAddress,
     private val username: String,
     private val password: String
 ) {
@@ -42,7 +43,7 @@ class TurnClient(
     private var allocation: Allocation? = null
     private val bindingChannels = mutableSetOf<ChannelBinding>()
 
-    private var socketHandler: SocketHandler = SocketHandler().apply { start() }
+    private var socketHandler: SocketHandler? = null
     private val numberSeqGenerator = NumberSeqGenerator(0x4000..0x7FFF)
 
     private var nonce: String? = null
@@ -76,9 +77,13 @@ class TurnClient(
 
     suspend fun createAllocation(): Result<List<ICECandidate>> {
         return try {
-            if (allocation!= null) { throw IllegalStateException("Allocation already exists") }
+            if (allocation != null) {
+                throw IllegalStateException("Allocation already exists")
+            }
+            socketHandler = socketHandler ?: SocketHandler().apply { start() }
+
             val allocateRequest = allocateRequestBuilder.setNonce(nonce).setRealm(realm).build()
-            val response = socketHandler.sendMessage(allocateRequest)
+            val response = socketHandler!!.sendMessage(allocateRequest)
 
             if (response.msgClass == MessageClass.SUCCESS_RESPONSE) {
                 Result.success(parseAllocationResult(response))
@@ -137,7 +142,7 @@ class TurnClient(
             .build()
 
         val response: Message = try {
-            socketHandler.sendMessage(channelBind)
+            socketHandler!!.sendMessage(channelBind)
         } catch (ex: Exception) {
             return Result.failure(ex)
         }
@@ -194,7 +199,7 @@ class TurnClient(
             .setRealm(realm)
             .build()
 
-        socketHandler.sendMessage(request)
+        socketHandler!!.sendMessage(request)
     }
 
     // this refreshes the allocation
@@ -208,7 +213,7 @@ class TurnClient(
             setNonce(nonce!!)
         }.build()
 
-        val response = socketHandler.sendMessage(refreshRequest)
+        val response = socketHandler!!.sendMessage(refreshRequest)
 
         when (response.msgClass) {
             MessageClass.SUCCESS_RESPONSE -> {
@@ -236,6 +241,7 @@ class TurnClient(
                             ?.getValueAsString()
                         refresh(lifetime)
                     }
+
                     else -> {
                         throw IOException("Refresh failed with error code: $errorValue")
                     }
@@ -251,14 +257,8 @@ class TurnClient(
         refreshJob = null
         refresh(0.seconds)
         allocation = null
-    }
-
-    suspend fun dispose() {
-        scope.cancel()
-        withContext(Dispatchers.IO) {
-            socketHandler.cancel()
-            socketHandler.join()
-        }
+        socketHandler?.cancel()
+        socketHandler = null
     }
 
     private fun startRefreshJob() = scope.launch {
@@ -272,7 +272,7 @@ class TurnClient(
                 if (allocation!!.lifetime < 2.minutes) {
                     try {
                         refresh(10.minutes)
-                    }catch (ex: Exception) {
+                    } catch (ex: Exception) {
                         ex.printStackTrace()
                     }
                 }
@@ -299,7 +299,7 @@ class TurnClient(
         launch {
             while (isActive) {
                 delay(keepAliveTime)
-                socketHandler.sendKeepAlive()
+                socketHandler!!.sendKeepAlive()
             }
         }
     }
@@ -315,7 +315,7 @@ class TurnClient(
         }
 
         override fun receiveMessage(cb: IncomingMessage) {
-            socketHandler.dataMessageListener[channelNumber] = cb
+            socketHandler!!.dataMessageListener[channelNumber] = cb
         }
 
         private fun sendChannelData(channelNo: Int, data: ByteArray) {
@@ -326,7 +326,7 @@ class TurnClient(
 
             val packet = DatagramPacket(channelData.array(), channelData.capacity())
             try {
-                socketHandler.sendPacket(packet)
+                socketHandler!!.sendPacket(packet)
             } catch (ex: Exception) {
                 ex.printStackTrace()
             }
@@ -350,7 +350,6 @@ class TurnClient(
             return "ChannelBindingImpl(peerAddress=$peerAddress, channelNumber=$channelNumber)"
         }
     }
-
 
     private fun parseAllocationResult(response: Message): List<ICECandidate> {
         val attrs = response.attributes
@@ -390,7 +389,6 @@ class TurnClient(
         allocation = Allocation(
             System.currentTimeMillis(), lifetime.seconds, candidates
         )
-
         return candidates
     }
 
@@ -423,7 +421,6 @@ class TurnClient(
         }
 
         override fun run() {
-            socket.connect(serverAddress)
             running = true
             socket.soTimeout = socketReceiveTimeout
             while (running) {
@@ -437,7 +434,9 @@ class TurnClient(
                     dispatchMessage(receivedData)
 
                 } catch (_: SocketException) {
+                    // Todo: handle socket exception
                 } catch (_: SocketTimeoutException) {
+                    // Todo: handle socket timeout
                 }
 
                 // Check for a timed-out responseCallback and remove it.
@@ -466,6 +465,9 @@ class TurnClient(
 
                 val cb = resCb.remove(header.txId.toHexString())
                 cb?.onResponse(message)
+                if (cb == null) {
+                    System.err.println("No response callback found for transaction id: ${header.txId.toHexString()}")
+                }
             } else if (msgClass == MessageClass.INDICATION.type) {
                 TODO()
             }
@@ -492,8 +494,8 @@ class TurnClient(
             val messageClass: UShort = header.msgType and Message.MESSAGE_CLASS_MASK
             if (messageClass == MessageClass.REQUEST.type) {
                 val packet = message.encodeToByteArray().let { DatagramPacket(it, it.size) }
-                socket.send(packet)
-                socketHandler.registerOnTransaction(resCb)
+                socketHandler?.registerOnTransaction(resCb)
+                sendPacket(packet)
 
                 println("<Request>")
                 println(message)
@@ -525,7 +527,7 @@ class TurnClient(
         fun sendKeepAlive() {
             try {
                 val packet = DatagramPacket(byteArrayOf(0, 0), 2)
-                socket.send(packet)
+                sendPacket(packet)
             } catch (ex: Exception) {
                 ex.printStackTrace()
             }
@@ -537,10 +539,13 @@ class TurnClient(
         }
 
         fun sendPacket(packet: DatagramPacket) {
+            packet.apply {
+                address = serverAddress.address
+                port = serverAddress.port
+            }
             socket.send(packet)
         }
     }
-
 
     data class Allocation(
         val timestamp: Long, var lifetime: Duration, val iceCandidates: List<ICECandidate>

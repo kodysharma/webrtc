@@ -25,19 +25,23 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import desidev.rtc.media.ReceivingPort
 import desidev.rtc.media.camera.CameraCapture
+import desidev.rtc.media.camera.CameraCaptureImpl
 import desidev.videocall.service.rtcmsg.RTCMessage
 import desidev.rtc.media.player.VideoPlayer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 
 
 @Composable
 fun CameraToVideoPlayer() {
     val context = LocalContext.current
-    val cameraCapture = remember { CameraCapture.create(context) }
+    val cameraCapture = remember { CameraCaptureImpl(context) }
     var isRunning by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
@@ -80,8 +84,16 @@ fun CameraToVideoPlayer() {
         ) {
             if (isRunning) {
                 VideoPlayerView(
-                    format = cameraCapture.getMediaFormat().get(),
-                    samples = flowOfSamples(cameraCapture.compressedDataChannel()),
+                    format = runBlocking { cameraCapture.getMediaFormat().await() },
+                    samples = cameraCapture.compressedDataChannel().receiveAsFlow().map {
+                        it.run {
+                            RTCMessage.Sample(
+                                ptsUs = second.presentationTimeUs,
+                                buffer = first,
+                                flags = second.flags
+                            )
+                        }
+                    },
                     modifier = Modifier.fillMaxSize()
                 )
             }
@@ -136,7 +148,9 @@ fun VideoPlayerView(
             }
         }
         onDispose {
-            videoPlayer.stop()
+            scope.launch {
+                videoPlayer.stop()
+            }
         }
     }
 

@@ -29,6 +29,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -36,6 +37,7 @@ import test.videocall.MediaMuxerWrapper
 import test.videocall.R
 import java.nio.ByteBuffer
 
+@OptIn(DelicateCoroutinesApi::class)
 @Composable
 fun CameraCaptureSample(modifier: Modifier = Modifier) {
     val TAG = "CameraCaptureSample"
@@ -60,10 +62,11 @@ fun CameraCaptureSample(modifier: Modifier = Modifier) {
             var muxer: MediaMuxerWrapper? = null
             try {
                 muxer = MediaMuxerWrapper("${Environment.getExternalStorageDirectory()}/test.mp4")
-                val trackId = muxer.addTrack(cameraCapture.getMediaFormat().get())
+                val trackId = muxer.addTrack(cameraCapture.getMediaFormat().await())
                 muxer.start()
+
                 withContext(Dispatchers.Default) {
-                    while (channel.isOpenForReceive) {
+                    while (!channel.isClosedForReceive) {
                         try {
                             val data = channel.receive()
                             muxer.writeSampleData(trackId, ByteBuffer.wrap(data.first), data.second)
