@@ -40,12 +40,12 @@ private const val TAG = "AudioRecordingSample"
 @Composable
 fun AudioRecordingSample() {
     val scope = rememberCoroutineScope()
-    val voiceRecorderOutput = remember { desidev.rtc.media.SendingPort<desidev.rtc.media.AudioBuffer>() }
+    val voiceRecorderOutput = remember { SendingPort<AudioBuffer>() }
     val voiceRecorder = remember {
-        desidev.rtc.media.VoiceRecorder.Builder().setChunkLenInMs(20.asMilliSec.toLong()).build()
+        VoiceRecorder.Builder().setChunkLenInMs(20.asMilliSec.toLong()).build()
     }
     val encoder = remember {
-        desidev.rtc.media.codec.Codec.createAudioEncoder().apply {
+        Codec.createAudioEncoder().apply {
             setInPort(voiceRecorderOutput)
             configure(voiceRecorder.format)
         }
@@ -135,7 +135,6 @@ fun AudioRecordingSample() {
                 modifier = Modifier.fillMaxSize()
             ) {
                 Column {
-
                     if (isRecording) {
                         Text(text = "Recording.. : $time seconds")
                     }

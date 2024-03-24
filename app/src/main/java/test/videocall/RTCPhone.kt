@@ -82,8 +82,7 @@ class RTCPhone(context: Context) {
     private val mutCallStateFlow = MutableStateFlow<CallState>(CallState.NoSession)
     private val mutCameraStateFlow = MutableStateFlow(false)
     private val mutErrorSharedFlow = MutableSharedFlow<RtcPhoneException>()
-    private val mutConnectionStateFlow =
-        MutableStateFlow<ConnectionState>(ConnectionState.DisConnected)
+    private val mutConnectionStateFlow = MutableStateFlow<ConnectionState>(ConnectionState.DisConnected)
 
     val errorSharedFlow: SharedFlow<RtcPhoneException> = mutErrorSharedFlow.asSharedFlow()
     val callStateFlow: StateFlow<CallState> = mutCallStateFlow

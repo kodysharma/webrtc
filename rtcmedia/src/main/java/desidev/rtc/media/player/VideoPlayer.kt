@@ -221,7 +221,6 @@ class VideoPlayer(private val format: MediaFormat) {
         }
     }
 
-
     @OptIn(ObsoleteCoroutinesApi::class)
     fun frameScheduler(onNextFrame: (ImageBitmap) -> Unit) = scope.actor<Pair<ImageBitmap, Long>> {
         var previousTimestamp = -1L
