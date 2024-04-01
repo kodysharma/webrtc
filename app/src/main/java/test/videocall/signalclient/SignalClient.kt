@@ -27,8 +27,8 @@ class SignalClient {
     val eventFlow: SharedFlow<Any> = mutableEventFlow
     val connectionStateFlow = rpcClient.rpcConnectionEventFlow
 
-    suspend fun connect(url: String) {
-        rpcClient.connect(url)
+    suspend fun connect(url: String, peerName: String) {
+        rpcClient.connect("$url/$peerName")
         addSubscription()
     }
 

@@ -49,16 +49,16 @@ fun CameraCaptureSample(modifier: Modifier = Modifier) {
 
     val scope = rememberCoroutineScope()
 
-    fun Image.toBitmap(): Bitmap {
+/*    fun Image.toBitmap(): Bitmap {
         val outputBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         yuvToRgbConverter.yuvToRgb(this, outputBitmap)
         return outputBitmap
-    }
+    }*/
 
     fun startRecording() {
         scope.launch {
             cameraCapture.start()
-            val channel = cameraCapture.compressedDataChannel()
+            val channel = cameraCapture.compressChannel()
             var muxer: MediaMuxerWrapper? = null
             try {
                 muxer = MediaMuxerWrapper("${Environment.getExternalStorageDirectory()}/test.mp4")
@@ -91,11 +91,11 @@ fun CameraCaptureSample(modifier: Modifier = Modifier) {
 
     DisposableEffect(Unit) {
         println("adding preview frame listener")
-        cameraCapture.setPreviewFrameListener { image: Image ->
+        cameraCapture.setPreviewFrameListener { image ->
             Log.d(TAG, "frame update")
-            currentFrame = image.toBitmap()
-            image.close()
+            currentFrame = image
         }
+
         onDispose {
             cameraCapture.setPreviewFrameListener(null)
             scope.launch {

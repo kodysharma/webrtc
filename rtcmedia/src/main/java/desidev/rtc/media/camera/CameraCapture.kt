@@ -1,13 +1,11 @@
 package desidev.rtc.media.camera
 
 import android.content.Context
-import android.media.Image
+import android.graphics.Bitmap
 import android.media.MediaCodec.BufferInfo
 import android.media.MediaFormat
-import desidev.rtc.media.ReceivingPort
 import kotlinx.coroutines.Deferred
-import kotlinx.coroutines.channels.Channel
-import java.util.concurrent.Future
+import kotlinx.coroutines.channels.ReceiveChannel
 
 interface CameraCapture {
     val state: State
@@ -16,8 +14,8 @@ interface CameraCapture {
     suspend fun stop()
     suspend fun release()
     suspend fun selectCamera(cameraFace: CameraLensFacing)
-    fun setPreviewFrameListener(listener: ((Image) -> Unit)?)
-    fun compressedDataChannel(): Channel<Pair<ByteArray, BufferInfo>>
+    fun setPreviewFrameListener(listener: ((Bitmap) -> Unit)?)
+    fun compressChannel(): ReceiveChannel<Pair<ByteArray, BufferInfo>>
     fun getMediaFormat(): Deferred<MediaFormat>
 
     companion object {

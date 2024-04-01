@@ -24,10 +24,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import desidev.rtc.media.ReceivingPort
-import desidev.rtc.media.camera.CameraCapture
 import desidev.rtc.media.camera.CameraCaptureImpl
 import desidev.videocall.service.rtcmsg.RTCMessage
 import desidev.rtc.media.player.VideoPlayer
+import desidev.utility.yuv.YuvToRgbConverter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
@@ -85,7 +85,7 @@ fun CameraToVideoPlayer() {
             if (isRunning) {
                 VideoPlayerView(
                     format = runBlocking { cameraCapture.getMediaFormat().await() },
-                    samples = cameraCapture.compressedDataChannel().receiveAsFlow().map {
+                    samples = cameraCapture.compressChannel().receiveAsFlow().map {
                         it.run {
                             RTCMessage.Sample(
                                 ptsUs = second.presentationTimeUs,
@@ -103,7 +103,7 @@ fun CameraToVideoPlayer() {
 
 
 private fun flowOfSamples(port: ReceivingPort<Pair<ByteArray, BufferInfo>>) =
-    channelFlow<RTCMessage.Sample> {
+    channelFlow {
         while (port.isOpenForReceive && isActive) {
             try {
                 send(port.receive().run {
@@ -126,11 +126,15 @@ fun VideoPlayerView(
     samples: Flow<RTCMessage.Sample>,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
+    val yuvToRgbConverter = remember { YuvToRgbConverter(context) }
+
     val videoPlayer = remember {
-        VideoPlayer(format).also {
+        VideoPlayer(yuvToRgbConverter, format).also {
             Log.d("VideoPlayerView", "format: $format")
         }
     }
+
     val scope = rememberCoroutineScope()
 
     DisposableEffect(Unit) {
@@ -139,7 +143,7 @@ fun VideoPlayerView(
             samples.collect { sample ->
                 videoPlayer.inputData(
                     buffer = sample.buffer,
-                    info = MediaCodec.BufferInfo().apply {
+                    info = BufferInfo().apply {
                         size = sample.buffer.size
                         presentationTimeUs = sample.ptsUs
                         flags = sample.flags

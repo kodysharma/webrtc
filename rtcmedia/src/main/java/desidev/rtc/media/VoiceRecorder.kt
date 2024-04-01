@@ -13,6 +13,11 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 import desidev.utility.*
+import kotlinx.coroutines.DelicateCoroutinesApi
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ClosedReceiveChannelException
+import kotlinx.coroutines.channels.ClosedSendChannelException
+import kotlinx.coroutines.channels.ReceiveChannel
 
 class VoiceRecorder private constructor(
     channelConfig: Int,
@@ -26,12 +31,17 @@ class VoiceRecorder private constructor(
     private val _scope = CoroutineScope(Dispatchers.IO)
     private var ptsUs: Long = 0
 
-    private val _speedMeter = SpeedMeter("VoiceRecorder")
+    private val speedMeter = SpeedMeter("VoiceRecorder")
 
-    private var _sendingPort = SendingPort<AudioBuffer>()
+    private var sendingChannel: Channel<AudioBuffer>? = null
 
-    val outPort: ReceivingPort<AudioBuffer>
-        get() = _sendingPort
+    val outChannel: ReceiveChannel<AudioBuffer>
+        get() {
+            if (sendingChannel == null) {
+                sendingChannel = Channel()
+            }
+            return sendingChannel!!
+        }
 
     @SuppressLint("MissingPermission")
     private val _audioRecord = AudioRecord(
@@ -46,14 +56,13 @@ class VoiceRecorder private constructor(
 
     fun start() {
         _audioRecord.startRecording()
-        _sendingPort.reopen()
         startFlowingOutput()
     }
 
     fun stop() {
         _audioRecord.stop()
-        _sendingPort.close()
-        _sendingPort.close()
+        sendingChannel?.close()
+        sendingChannel = null
     }
 
     fun release() {
@@ -62,9 +71,10 @@ class VoiceRecorder private constructor(
         }
         _audioRecord.release()
         _scope.cancel("VoiceRecorder is released")
-        _speedMeter.stop()
+        speedMeter.stop()
     }
 
+    @OptIn(DelicateCoroutinesApi::class)
     private fun startFlowingOutput() = _scope.launch {
         // Jab tak recording chal rahi hai aur coroutine active hain tab tak buffer bhejte raho
         while (isActive && _audioRecord.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
@@ -77,10 +87,12 @@ class VoiceRecorder private constructor(
 
                 if (status > 0) {
                     ptsUs += chunkTimeLenUs
-                    with(_sendingPort) {
-                        if (isOpenForSend) send(AudioBuffer(buffer, ptsUs, 0))
+                    try {
+                        sendingChannel?.send(AudioBuffer(buffer, ptsUs, 0))
+                        speedMeter.update()
+                    } catch (e: ClosedSendChannelException) {
+                        // ignore
                     }
-                    _speedMeter.update()
                 } else {
                     Log.d(TAG, "AudioRecorder: ${getErrorMessage(status)}")
                 }

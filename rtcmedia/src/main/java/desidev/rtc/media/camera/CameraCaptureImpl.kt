@@ -2,6 +2,7 @@ package desidev.rtc.media.camera
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.ImageFormat
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
@@ -22,18 +23,15 @@ import desidev.utility.yuv.YuvToRgbConverter
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.ObsoleteCoroutinesApi
-import kotlinx.coroutines.android.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.channels.SendChannel
-import kotlinx.coroutines.channels.actor
-import kotlinx.coroutines.channels.consumeEach
-import kotlinx.coroutines.channels.trySendBlocking
-import kotlinx.coroutines.job
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -49,9 +47,9 @@ import kotlin.coroutines.suspendCoroutine
  * And a ImageReader to provide the preview frames as Image objects
  */
 class CameraCaptureImpl(context: Context) : CameraCapture {
-    private val _handlerThread = HandlerThread("CameraHandler").apply { start() }
-    private val _handler = Handler(_handlerThread.looper)
-    private val handlerDispatcher = _handler.asCoroutineDispatcher()
+    private val handlerThread = HandlerThread("CameraHandler").apply { start() }
+    private val handler = Handler(handlerThread.looper)
+    private val yuvToRgbConverter = YuvToRgbConverter(context)
 
     private val stateLock = Mutex()
     private var _state = CameraCapture.State.INACTIVE
@@ -64,18 +62,17 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
 
     private val cameraQuality: CameraCapture.Quality = CameraCapture.Quality.Low
 
-    private val _cameraManager: CameraManager =
+    private val cameraManager: CameraManager =
         context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
 
-    private var previewImageListener: ((Image) -> Unit)? = null
+    private var previewFrameListener: ((Bitmap) -> Unit)? = null
 
     private val previewImageReader: ImageReader
 
     private var encoder: Encoder? = null
-    private var encoderOutput = Channel<Pair<ByteArray, BufferInfo>>(Channel.BUFFERED)
 
-    private val _cameras: List<CameraDeviceInfo> = _cameraManager.cameraIdList.map { id ->
-        val characteristics = _cameraManager.getCameraCharacteristics(id)
+    private val cameras: List<CameraDeviceInfo> = cameraManager.cameraIdList.map { id ->
+        val characteristics = cameraManager.getCameraCharacteristics(id)
         characteristics.get(CameraCharacteristics.LENS_FACING).run {
             val lensFacing = when (this) {
                 CameraCharacteristics.LENS_FACING_BACK -> CameraLensFacing.BACK
@@ -94,64 +91,70 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
     private lateinit var _session: CameraCaptureSession
 
     private var currentCamera: CameraDeviceInfo =
-        _cameras.find { it.lensFacing == CameraLensFacing.FRONT }!!
+        cameras.find { it.lensFacing == CameraLensFacing.BACK }!!
     override val selectedCamera: CameraDeviceInfo
         get() = currentCamera
+
     init {
-        val currentCameraCharacteristics = _cameraManager.getCameraCharacteristics(currentCamera.id)
+        val currentCameraCharacteristics = cameraManager.getCameraCharacteristics(currentCamera.id)
         val (width, height) = getSupportedSize(currentCameraCharacteristics, cameraQuality)
 
-        previewImageReader =
-            ImageReader.newInstance(width, height, ImageFormat.YUV_420_888, 2).apply {
-                setOnImageAvailableListener({
-                    val image = it.acquireNextImage()
-                    if (image != null) {
-                        if (previewImageListener != null) {
-                            previewImageListener!!.invoke(image)
-                        } else {
-                            image.close()
-                        }
-                    }
-                }, _handler)
+        Log.d(TAG, "OutputSize: $width x $height")
+
+        previewImageReader = ImageReader.newInstance(width, height, ImageFormat.YUV_420_888, 2)
+        previewImageReader.setOnImageAvailableListener({ imageReader ->
+            imageReader.acquireNextImage()?.let { image ->
+                val yuvImage = YUV420(
+                    width = image.width,
+                    height = image.height,
+                    y = image.planes[0].buffer.makeCopy(),
+                    u = image.planes[1].buffer.makeCopy(),
+                    v = image.planes[2].buffer.makeCopy(),
+                    timestampUs = image.timestamp / 1000
+                )
+
+                val sendResult = encoder?.inputChannel?.trySend(yuvImage)
+                if (sendResult?.isSuccess != true) {
+                    Log.e(TAG, "Failed to send image to encoder")
+                }
+
+                // convert this image to bitmap
+                if (previewFrameListener != null) {
+                    val frame = Bitmap.createBitmap(image.width, image.height, Bitmap.Config.ARGB_8888)
+                    yuvToRgbConverter.yuvToRgb(image, frame)
+                    previewFrameListener?.invoke(frame)
+                }
+
+                image.close()
             }
+        }, handler)
     }
 
 
     override suspend fun start() {
         stateLock.withLock {
             startCapturing()
-            encoder = Encoder(encoderOutput).apply {
-                start()
-                setPreviewFrameListener { image ->
-                    val yuvImage = YUV420(
-                        width = image.width,
-                        height = image.height,
-                        y = image.planes[0].buffer.makeCopy(),
-                        u = image.planes[1].buffer.makeCopy(),
-                        v = image.planes[2].buffer.makeCopy(),
-                        timestampUs = image.timestamp / 1000
-                    )
-                    encoderInputImageChannel.trySendBlocking(yuvImage)
-                    image.close()
-                }
-            }
+            encoder = Encoder()
+            encoder!!.start()
         }
     }
 
     private suspend fun startCapturing() {
         if (_state == CameraCapture.State.INACTIVE) {
             val camDevice = openCamera()
+
             _session = configSession(camDevice)
 
-            val recordRequest = camDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).run {
-                set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(30, 30))
-                set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, 3)
-                addTarget(previewImageReader.surface)
-                build()
-            }
+            val recordRequest = camDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
+                .run {
+                    set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(30, 30))
+                    set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, 3)
+                    addTarget(previewImageReader.surface)
+                    build()
+                }
 
             withContext(Dispatchers.Main) {
-                _session.setRepeatingRequest(recordRequest, null, _handler)
+                _session.setRepeatingRequest(recordRequest, null, handler)
             }
             _state = CameraCapture.State.ACTIVE
         }
@@ -180,7 +183,10 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
     override suspend fun stop() {
         stateLock.withLock {
             stopCamera()
-            encoder?.stop()
+            encoder?.apply {
+                stop()
+                outputChannel?.close()
+            }
             encoder = null
         }
     }
@@ -215,14 +221,14 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
     private fun releaseInstances() {
         try {
             previewImageReader.close()
-            _handlerThread.quitSafely()
+            handlerThread.quitSafely()
         } catch (ex: Exception) {
             ex.printStackTrace()
         }
     }
 
     override suspend fun selectCamera(cameraFace: CameraLensFacing) {
-        currentCamera = _cameras.first { it.lensFacing == cameraFace }
+        currentCamera = cameras.first { it.lensFacing == cameraFace }
         stateLock.withLock {
             val wasActive = isActive()
             stopCamera()
@@ -233,12 +239,23 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
     }
 
 
-    override fun setPreviewFrameListener(listener: ((Image) -> Unit)?) {
-        previewImageListener = listener
+    override fun setPreviewFrameListener(listener: ((Bitmap) -> Unit)?) {
+        previewFrameListener = listener
     }
 
-    override fun compressedDataChannel(): Channel<Pair<ByteArray, BufferInfo>> {
-        return encoderOutput
+
+    /**
+     * Compressed Output Channel of audio buffers
+     */
+    @OptIn(DelicateCoroutinesApi::class)
+    override fun compressChannel(): Channel<Pair<ByteArray, BufferInfo>> {
+        val channel = encoder?.outputChannel
+        val createNew = channel == null || channel.isClosedForSend
+        if (createNew) {
+            encoder?.outputChannel = Channel()
+        }
+        return encoder?.outputChannel as? Channel
+            ?: throw IllegalStateException("Maybe you forgot to call start()?")
     }
 
     override fun getMediaFormat(): Deferred<MediaFormat> {
@@ -249,7 +266,7 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
     @SuppressLint("MissingPermission")
     private suspend fun openCamera(): CameraDevice = suspendCoroutine { cont ->
         val cameraId = currentCamera.id
-        _cameraManager.openCamera(cameraId, object : CameraDevice.StateCallback() {
+        cameraManager.openCamera(cameraId, object : CameraDevice.StateCallback() {
             override fun onOpened(camera: CameraDevice) {
                 _cameraCloseDeferred = CompletableDeferred()
                 cont.resume(camera)
@@ -281,7 +298,7 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
                 _cameraCloseDeferred.complete(Unit)
                 Log.d(TAG, "camera device ${camera.id} is now closed")
             }
-        }, _handler)
+        }, handler)
     }
 
 
@@ -308,7 +325,7 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
                         Log.d(TAG, "CameraCaptureSession is now closed")
                     }
                 },
-                _handler
+                handler
             )
         }
 
@@ -325,98 +342,75 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
     }
 
 
+    private inner class Encoder {
+        var outputChannel: SendChannel<Pair<ByteArray, BufferInfo>>? = null
+        val inputChannel = Channel<YUV420>(Channel.BUFFERED)
 
-
-
-    private inner class Encoder(
-        val outputChannel: SendChannel<Pair<ByteArray, BufferInfo>>
-    ) {
-        val encoderInputImageChannel = Channel<YUV420>(Channel.BUFFERED)
         val formatDeferred = CompletableDeferred<MediaFormat>()
+
         private val looperThread = HandlerThread("EncoderLooper").apply { start() }
-        private val handler = Handler(looperThread.looper)
         private val codecEvent = Channel<CodecEvent>()
         private val scope = CoroutineScope(Dispatchers.Default)
         private lateinit var mediaCodec: MediaCodec
-
-        @OptIn(ObsoleteCoroutinesApi::class)
-        val inputBufferHandler = scope.actor<CodecEvent.OnInputBufferAvailable> {
-            consumeEach { bufferEvent ->
-                val (codec, index) = bufferEvent
-                val data = encoderInputImageChannel.receive()
-
-                codec.getInputImage(index)?.let { codecInputImage ->
-                    val y = codecInputImage.planes[0].buffer
-                    val u = codecInputImage.planes[1].buffer
-                    val v = codecInputImage.planes[2].buffer
-
-                    y.put(data.y)
-                    u.put(data.u)
-                    v.put(data.v)
-                }
-
-                val size = data.width * data.height * 3 / 2
-                codec.queueInputBuffer(index, 0,size, data.timestampUs, 0)
-            }
-        }
-
-        @OptIn(ObsoleteCoroutinesApi::class)
-        val outputBufferHandler = scope.actor<CodecEvent.OnOutputBufferAvailable> {
-            consumeEach { bufferEvent ->
-                val (codec, index, info) = bufferEvent
-                val compressedArray = codec.getOutputBuffer(index)!!.run {
-                    val array = ByteArray(remaining())
-                    get(array)
-                    array
-                }
-                outputChannel.send(Pair(compressedArray, info))
-                codec.releaseOutputBuffer(index, false)
-            }
-        }
 
         fun start() {
             mediaCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
             val format = createFormat()
 
-            mediaCodec.setCallback(object : MediaCodec.Callback() {
-                override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {
-                    codecEvent.trySendBlocking(CodecEvent.OnInputBufferAvailable(codec, index))
-                }
-
-                override fun onOutputBufferAvailable(
-                    codec: MediaCodec,
-                    index: Int,
-                    info: BufferInfo
-                ) {
-                    codecEvent.trySendBlocking(
-                        CodecEvent.OnOutputBufferAvailable(
-                            codec,
-                            index,
-                            info
-                        )
-                    )
-                }
-
-                override fun onError(codec: MediaCodec, e: MediaCodec.CodecException) {
-                    Log.e(TAG, "MediaCodec error: ${e.message}")
-                }
-
-                override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) {
-                    codecEvent.trySendBlocking(CodecEvent.OnOutputFormatChanged(format))
-                }
-            }, handler)
             mediaCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             mediaCodec.start()
 
             scope.launch {
-                codecEvent.consumeEach { event ->
-                    when (event) {
-                        is CodecEvent.OnInputBufferAvailable -> inputBufferHandler.send(event)
-                        is CodecEvent.OnOutputBufferAvailable -> outputBufferHandler.send(event)
-                        is CodecEvent.OnOutputFormatChanged -> formatDeferred.complete(event.format)
+                while (isActive) {
+                    var index = mediaCodec.dequeueInputBuffer(0)
+                    if (index >= 0) {
+                        queueInputBuffer(mediaCodec, index)
+                    }
+
+                    val info = BufferInfo()
+                    index = mediaCodec.dequeueOutputBuffer(info, 0)
+                    if (index >= 0) {
+                        processOutputBuffer(mediaCodec, index, info)
+                    } else if (index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        formatDeferred.complete(mediaCodec.outputFormat)
                     }
                 }
             }
+        }
+
+
+        private suspend fun queueInputBuffer(codec: MediaCodec, index: Int) {
+            val data: YUV420 = inputChannel.receive()
+
+            codec.getInputImage(index)?.let { codecInputImage: Image ->
+                val y = codecInputImage.planes[0].buffer
+                val u = codecInputImage.planes[1].buffer
+                val v = codecInputImage.planes[2].buffer
+
+                y.put(data.y)
+                u.put(data.u)
+                v.put(data.v)
+            }
+
+            val size = data.width * data.height * 3 / 2
+            codec.queueInputBuffer(index, 0, size, data.timestampUs, 0)
+        }
+
+
+        private suspend fun processOutputBuffer(codec: MediaCodec, index: Int, info: BufferInfo) {
+            val compressedArray = codec.getOutputBuffer(index)!!.run {
+                val array = ByteArray(remaining())
+                get(array)
+                array
+            }
+
+            try {
+                outputChannel?.send(Pair(compressedArray, info))
+            } catch (ex: ClosedSendChannelException) {
+                // ignore
+            }
+
+            codec.releaseOutputBuffer(index, false)
         }
 
         suspend fun stop() {
@@ -442,7 +436,7 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
             }
 
             // Close the encoder input image channel and quit the looper thread
-            encoderInputImageChannel.close()
+            inputChannel.close()
             looperThread.quitSafely()
         }
 
@@ -457,12 +451,10 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
                 )
                 setInteger(MediaFormat.KEY_BIT_RATE, 250_000)
                 setInteger(MediaFormat.KEY_FRAME_RATE, 30)
-                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 10)
+                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
             }
         }
     }
-
-
 
     sealed interface CodecEvent {
         data class OnInputBufferAvailable(val codec: MediaCodec, val index: Int) : CodecEvent
@@ -484,7 +476,6 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
         val v: ByteBuffer,
         val timestampUs: Long
     )
-
 
     companion object {
         private const val TAG = "CameraCaptureImpl"

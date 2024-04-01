@@ -18,15 +18,14 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import desidev.utility.SpeedMeter
-import desidev.rtc.media.codec.Codec
-import desidev.rtc.media.codec.configure
+import desidev.rtc.media.AudioEncoderActor
+import desidev.rtc.media.AudioEncoderActor.EncoderAction
+import desidev.rtc.media.VoiceRecorder
+import desidev.rtc.media.codec.createAudioMediaFormat
 import desidev.utility.asMilliSec
 import desidev.utility.toLong
-import desidev.rtc.media.AudioBuffer
-import desidev.rtc.media.SendingPort
-import desidev.rtc.media.VoiceRecorder
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.consumeEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import test.videocall.MediaMuxerWrapper
@@ -37,18 +36,17 @@ import java.util.TimerTask
 
 private const val TAG = "AudioRecordingSample"
 
+data class App(
+    val voiceRecorder: VoiceRecorder,
+    var encoderActor: AudioEncoderActor? = null,
+)
+
 @Composable
 fun AudioRecordingSample() {
     val scope = rememberCoroutineScope()
-    val voiceRecorderOutput = remember { SendingPort<AudioBuffer>() }
-    val voiceRecorder = remember {
-        VoiceRecorder.Builder().setChunkLenInMs(20.asMilliSec.toLong()).build()
-    }
-    val encoder = remember {
-        Codec.createAudioEncoder().apply {
-            setInPort(voiceRecorderOutput)
-            configure(voiceRecorder.format)
-        }
+    val app = remember {
+        val voiceRecorder = VoiceRecorder.Builder().setChunkLenInMs(20.asMilliSec.toLong()).build()
+        App(voiceRecorder)
     }
 
     var muxer by remember {
@@ -62,32 +60,27 @@ fun AudioRecordingSample() {
 
     suspend fun flowFromEncoderToMuxer() {
         withContext(Dispatchers.IO) {
-            val audioTrack = muxer.addTrack(encoder.mediaFormat().get())
+            val encoder = app.encoderActor!!
+            val format = encoder.outputFormat.await()
+            val audioTrack = muxer.addTrack(format)
             muxer.start()
 
             Log.d(TAG, "flowFromEncoderToMuxer: Muxer started")
 
             val speedMeter = desidev.utility.SpeedMeter("flowFromEncoderToMuxer")
 
-            encoder.run {
-                while (outPort.isOpenForReceive) {
-                    try {
-                        val chunk = outPort.receive()
-                        muxer.writeSampleData(
-                            audioTrack,
-                            ByteBuffer.wrap(chunk.buffer),
-                            MediaCodec.BufferInfo().apply {
-                                size = chunk.buffer.size
-                                presentationTimeUs = chunk.ptsUs
-                                flags = chunk.flags
-                            }
-                        )
-                    } catch (ex: Exception) {
-                        Log.d(TAG, "flowFromEncoderToMuxer: exception: $ex")
+            encoder.outputChannel.consumeEach { chunk ->
+                muxer.writeSampleData(
+                    audioTrack,
+                    ByteBuffer.wrap(chunk.buffer),
+                    MediaCodec.BufferInfo().apply {
+                        size = chunk.buffer.size
+                        presentationTimeUs = chunk.ptsUs
+                        flags = chunk.flags
                     }
+                )
 
-                    speedMeter.update()
-                }
+                speedMeter.update()
             }
 
             muxer.stop()
@@ -99,9 +92,24 @@ fun AudioRecordingSample() {
 
     fun startRecording() {
         isRecording = true
-        voiceRecorder.start()
-        encoder.setInPort(voiceRecorder.outPort)
-        encoder.startEncoder()
+
+        app.encoderActor = AudioEncoderActor(app.voiceRecorder.outChannel)
+
+        scope.launch {
+            app.encoderActor!!.send(
+                EncoderAction.Configure(
+                    createAudioMediaFormat(
+                        app.voiceRecorder.format
+                    )
+                )
+            )
+
+            app.encoderActor!!.send(EncoderAction.Start)
+
+            flowFromEncoderToMuxer()
+        }
+
+        app.voiceRecorder.start()
 
         time = 0
         timer.schedule(
@@ -113,17 +121,17 @@ fun AudioRecordingSample() {
             0,
             1000
         )
-
-        with(scope) {
-            launch { flowFromEncoderToMuxer() }
-        }
     }
 
     fun stopRecording() {
         isRecording = false
-        voiceRecorder.stop()
-        voiceRecorderOutput.close()
-        encoder.stopEncoder()
+        app.apply {
+            voiceRecorder.stop()
+            encoderActor!!.trySendBlocking(EncoderAction.Stop)
+            encoderActor = null
+
+            Log.d(TAG, "Recording stopped")
+        }
         timer.cancel()
         timer = Timer()
     }

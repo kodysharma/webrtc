@@ -131,8 +131,7 @@ class DefaultCallService<P : Any>(
                 var imageBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
                 LaunchedEffect(key1 = Unit) {
                     _cameraCapture.setPreviewFrameListener { image ->
-                        imageBitmap = image.toImageBitmap()
-                        image.close()
+                        imageBitmap = image.asImageBitmap()
                     }
                 }
                 imageBitmap?.let {

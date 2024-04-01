@@ -5,16 +5,13 @@ import android.content.Context
 import android.graphics.ImageFormat
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
-import android.media.MediaFormat
 import android.util.Log
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.rule.GrantPermissionRule
 import com.google.gson.GsonBuilder
 import desidev.rtc.media.camera.CameraCapture
 import desidev.videocall.service.rtcmsg.RTCMessage
-import desidev.videocall.service.rtcmsg.RTCMessage.Control.ControlData
-import desidev.videocall.service.rtcmsg.toRTCFormat
-import junit.framework.TestCase.assertEquals
+import kotlinx.coroutines.channels.consumeEach
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.decodeFromByteArray
@@ -22,31 +19,14 @@ import kotlinx.serialization.encodeToByteArray
 import kotlinx.serialization.protobuf.ProtoBuf
 import org.junit.Rule
 import org.junit.Test
-import java.nio.ByteBuffer
 
 class SampleTest {
 
     @JvmField
     @Rule
-    val cameraPermission = GrantPermissionRule.grant(Manifest.permission.CAMERA)
+    val cameraPermission: GrantPermissionRule =
+        GrantPermissionRule.grant(Manifest.permission.CAMERA)
 
-    @OptIn(ExperimentalSerializationApi::class)
-    @Test
-    fun sample() {
-        val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, 44100, 1).apply {
-            setByteBuffer("csd-0", ByteBuffer.wrap(byteArrayOf(1, 2, 3, 4)))
-        }
-        val encoded = ProtoBuf.encodeToByteArray(
-            RTCMessage(
-                control = RTCMessage.Control(
-                    flags = RTCMessage.Control.STREAM_ENABLE,
-                    data = ControlData(format.toRTCFormat(), 0)
-                )
-            )
-        )
-        val decoded = ProtoBuf.decodeFromByteArray<RTCMessage>(encoded)
-        Log.d("decoded", decoded.toString())
-    }
 
     @Test
     fun cameraSampleTest() {
@@ -57,18 +37,16 @@ class SampleTest {
             cameraCapture.start()
 
             Log.d("cameraSampleTest", "Camera capture started")
-            val port = cameraCapture.compressedDataChannel()
-
-//            while (port.isOpenForReceive) {
-//                val sample = port.receive().run {
-//                    RTCMessage.Sample(
-//                        ptsUs = second.presentationTimeUs,
-//                        buffer = first,
-//                        flags = second.flags
-//                    )
-//                }
-//                assertEquals(sample, sampleEncodeDecodeTest(sample))
-//            }
+            val channel = cameraCapture.compressChannel()
+            channel.consumeEach {
+                val (buffer, info) = it
+                val sample = RTCMessage.Sample(
+                    ptsUs = info.presentationTimeUs,
+                    buffer = buffer,
+                    flags = info.flags
+                )
+                sampleEncodeDecodeTest(sample)
+            }
         }
     }
 
@@ -82,7 +60,6 @@ class SampleTest {
         )
         return decoded.videoSample!!
     }
-
 
     @Test
     fun logCameraCharacteristics() {
@@ -133,10 +110,12 @@ class SampleTest {
                             val supportedSizes =
                                 characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!
                                     .getOutputSizes(formatInt)
+                                    .map { size -> "${size.width}x${size.height}" }
+
                             StringBuilder().let {
                                 it.append(formatName)
                                 it.append(": ")
-                                it.append(supportedSizes.map { "${it.width}x${it.height}" })
+                                it.append(supportedSizes)
                                 it.toString()
                             }
                         }

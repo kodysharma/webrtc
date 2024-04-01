@@ -1,6 +1,5 @@
 package test.videocall.ui
 
-import android.media.MediaCodec.BufferInfo
 import android.util.Log
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.layout.Arrangement
@@ -31,7 +30,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -41,27 +39,22 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Alignment.Companion.CenterHorizontally
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.constraintlayout.compose.ConstraintLayout
-import desidev.rtc.media.ReceivingPort
-import desidev.rtc.media.camera.CameraCaptureImpl
-import desidev.videocall.service.rtcmsg.RTCMessage.Sample
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.launch
 import test.videocall.R
 import test.videocall.RTCPhone
 import test.videocall.RTCPhone.CallState
+import test.videocall.RTCPhoneAction
 import test.videocall.signalclient.Peer
 
 
 private const val TAG = "RtcPhoneSample"
 
-sealed class Screen() {
+sealed class Screen {
     data object Home : Screen()
     data object Users : Screen()
     data object CallScreen : Screen()
@@ -70,11 +63,8 @@ sealed class Screen() {
 @Composable
 fun RTCCAllSample() {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     var peerName by remember { mutableStateOf("") }
     val rtcPhone = remember { RTCPhone(context) }
-    val phoneState by rtcPhone.callStateFlow.collectAsState()
-    val cameraEnable by rtcPhone.cameraStateFlow.collectAsState()
     var currentScreen by remember { mutableStateOf<Screen>(Screen.Home) }
 
     LaunchedEffect(Unit) {
@@ -125,10 +115,10 @@ fun RTCCAllSample() {
                     peerName = peerName,
                     onPeerNameChanged = { peerName = it },
                     onConnectClicked = {
-                        rtcPhone.goOnline(
-                            peerName,
-                            onSuccess = { Log.i(TAG, "Connected to webserver") },
-                            onFailure = { Log.e(TAG, "Failed to connect", it) }
+                        rtcPhone.trySend(
+                            RTCPhoneAction.GoOnline(
+                                peerName, onSuccess = { }, onFailure = { }
+                            )
                         )
                     })
             }
@@ -137,10 +127,12 @@ fun RTCCAllSample() {
                 UsersScreen(
                     peerLoader = { rtcPhone.getPeers() },
                     onCallToPeer = { peer ->
-                        rtcPhone.makeCall(
-                            peer,
-                            onSuccess = { },
-                            onFailure = { }
+                        rtcPhone.trySend(
+                            RTCPhoneAction.MakeCall(
+                                peer,
+                                onSuccess = {},
+                                onFailure = {},
+                            )
                         )
                     }
                 )
@@ -274,15 +266,15 @@ private fun callScreenState(rtcPhone: RTCPhone): CallScreenState =
 
 @Composable
 fun CallScreen(rtcPhone: RTCPhone, onNavigateBack: () -> Unit) {
-    var callScreenState by remember { mutableStateOf<CallScreenState>(callScreenState(rtcPhone)) }
+    var callScreenState by remember { mutableStateOf(callScreenState(rtcPhone)) }
 
     LaunchedEffect(Unit) {
-        rtcPhone.callStateFlow.filter { it is RTCPhone.CallState.NoSession }
+        rtcPhone.callStateFlow.filter { it is CallState.NoSession }
             .collect { onNavigateBack() }
     }
 
     LaunchedEffect(Unit) {
-        rtcPhone.callStateFlow.filter { it !is RTCPhone.CallState.NoSession }.collect {
+        rtcPhone.callStateFlow.filter { it !is CallState.NoSession }.collect {
             callScreenState = callScreenState(rtcPhone)
         }
     }
@@ -297,13 +289,13 @@ fun CallScreen(rtcPhone: RTCPhone, onNavigateBack: () -> Unit) {
 
                 is CallScreenState.IncomingCall -> IncomingCallScreen(
                     sender = state.sender,
-                    onAcceptClicked = { rtcPhone.acceptCall() },
-                    onRejectClicked = { rtcPhone.rejectCall() }
+                    onAcceptClicked = { rtcPhone.trySend(RTCPhoneAction.PickUpCall) },
+                    onRejectClicked = { rtcPhone.trySend(RTCPhoneAction.EndCall) }
                 )
 
                 is CallScreenState.OutGoingCall -> OutGoingCallScreen(
                     receiverPeer = state.receiver,
-                    onEndCallClicked = { rtcPhone.endCall({}, {}) },
+                    onEndCallClicked = { rtcPhone.trySend(RTCPhoneAction.EndCall) },
                     rtcPhone = rtcPhone
                 )
             }
@@ -365,7 +357,6 @@ fun OutGoingCallScreen(
 
 @Composable
 fun IncomingCallScreen(sender: Peer, onRejectClicked: () -> Unit, onAcceptClicked: () -> Unit) {
-    val scope = rememberCoroutineScope()
     ConstraintLayout(modifier = Modifier.fillMaxSize()) {
         val name = createRef()
         Column(
@@ -422,21 +413,18 @@ fun IncomingCallScreen(sender: Peer, onRejectClicked: () -> Unit, onAcceptClicke
 
 @Composable
 fun InCallScreen(remotePeer: Peer, rtcPhone: RTCPhone) {
-    val TAG = "InCallScreen"
-    val scope = rememberCoroutineScope()
-    val context = LocalContext.current
-    val cameraCapture = remember { CameraCaptureImpl(context) }
-    val currentPreviewFrame = remember { mutableStateOf<ImageBitmap?>(null) }
-    val yuvToRgbConverter = remember { desidev.utility.yuv.YuvToRgbConverter(context) }
-
     ConstraintLayout(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
-            rtcPhone.LocalPeerView(modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth())
-            rtcPhone.RemotePeerView(modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth())
+            rtcPhone.LocalPeerView(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+            )
+            rtcPhone.RemotePeerView(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+            )
         }
 
 
@@ -454,7 +442,7 @@ fun InCallScreen(remotePeer: Peer, rtcPhone: RTCPhone) {
 
         val closeButton = createRef()
         IconButton(
-            onClick = { rtcPhone.endCall() },
+            onClick = { rtcPhone.trySend(RTCPhoneAction.EndCall) },
             modifier = Modifier.constrainAs(closeButton) {
                 bottom.linkTo(parent.bottom, 16.dp)
                 end.linkTo(parent.end, 16.dp)
@@ -467,28 +455,5 @@ fun InCallScreen(remotePeer: Peer, rtcPhone: RTCPhone) {
         }
     }
 }
-
-
-private fun CoroutineScope.receivingPortToChannel(port: ReceivingPort<Pair<ByteArray, BufferInfo>>): Channel<Sample> {
-    val channel = Channel<Sample>(Channel.BUFFERED)
-    launch {
-        while (port.isOpenForReceive) {
-            try {
-                channel.send(port.receive().run {
-                    Sample(
-                        ptsUs = second.presentationTimeUs,
-                        buffer = first,
-                        flags = second.flags
-                    )
-                })
-            } catch (_: Exception) {
-            }
-        }
-        Log.d("RTCCallSample", "sample channel closed")
-        channel.close()
-    }
-    return channel
-}
-
 
 

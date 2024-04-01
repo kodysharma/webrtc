@@ -8,7 +8,7 @@ import kotlin.reflect.full.createInstance
 import kotlin.reflect.full.declaredMemberProperties
 import kotlin.reflect.jvm.isAccessible
 
-val numberSeqGenerator = NumberSeqGenerator(Int.MIN_VALUE .. Int.MAX_VALUE)
+val numberSeqGenerator = NumberSeqGenerator(0 .. Int.MAX_VALUE)
 @Serializable
 data class RTCMessage(
     val audioSample: Sample? = null,
@@ -18,19 +18,28 @@ data class RTCMessage(
     @Serializable
     data class Control(
         val txId: Int = numberSeqGenerator.next(),
-        val flags: Int,
-        val data: ControlData? = null,
+        val streamEnable: StreamEnable? = null,
+        val streamDisable: StreamDisable? = null,
+        val ack: Acknowledge? = null
     ) {
-        companion object {
-            const val STREAM_ENABLE = 1
-            const val STREAM_DISABLE = 2
-            const val ACKNOWLEDGE = 4
+
+        enum class StreamType {
+            Audio, Video
         }
+        @Serializable
+        data class StreamEnable(
+            val format: Format,
+            val type: StreamType
+        )
 
         @Serializable
-        data class ControlData(
-            val format: Format, // data passed with STREAM_ENABLE flag
-            val streamId: Int // data passed with STREAM_ENABLE/_DISABLE flag
+        data class StreamDisable(
+            val streamType: StreamType
+        )
+
+        @Serializable
+        data class Acknowledge(
+            val txId: Int
         )
     }
 
@@ -121,7 +130,7 @@ data class RTCMessage(
 
 fun MediaFormat.toRTCFormat(): RTCMessage.Format {
     val map = mutableMapOf<String, RTCMessage.OneOfValue>()
-    val format = MediaFormat::class.declaredMemberProperties
+    MediaFormat::class.declaredMemberProperties
         .find { it.name == "mMap" }
         ?.let {
             it.isAccessible = true
