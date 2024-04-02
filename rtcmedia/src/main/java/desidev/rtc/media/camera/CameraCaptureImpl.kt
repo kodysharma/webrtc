@@ -19,6 +19,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
 import android.util.Range
+import android.view.Surface
 import desidev.utility.yuv.YuvToRgbConverter
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -60,8 +61,6 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
 
     override val state: CameraCapture.State get() = _state
 
-    private val cameraQuality: CameraCapture.Quality = CameraCapture.Quality.Low
-
     private val cameraManager: CameraManager =
         context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
 
@@ -84,14 +83,16 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
         }
     }
 
-
     private lateinit var _sessionCloseDeferred: CompletableDeferred<Unit>
-    private lateinit var _cameraCloseDeferred: CompletableDeferred<Unit>
 
+
+    private lateinit var _cameraCloseDeferred: CompletableDeferred<Unit>
     private lateinit var _session: CameraCaptureSession
 
+    private val cameraQuality: CameraCapture.Quality = CameraCapture.Quality.Lowest
+
     private var currentCamera: CameraDeviceInfo =
-        cameras.find { it.lensFacing == CameraLensFacing.BACK }!!
+        cameras.find { it.lensFacing == CameraLensFacing.FRONT }!!
     override val selectedCamera: CameraDeviceInfo
         get() = currentCamera
 
@@ -104,7 +105,7 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
         previewImageReader = ImageReader.newInstance(width, height, ImageFormat.YUV_420_888, 2)
         previewImageReader.setOnImageAvailableListener({ imageReader ->
             imageReader.acquireNextImage()?.let { image ->
-                val yuvImage = YUV420(
+               /* val yuvImage = YUV420(
                     width = image.width,
                     height = image.height,
                     y = image.planes[0].buffer.makeCopy(),
@@ -116,7 +117,7 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
                 val sendResult = encoder?.inputChannel?.trySend(yuvImage)
                 if (sendResult?.isSuccess != true) {
                     Log.e(TAG, "Failed to send image to encoder")
-                }
+                }*/
 
                 // convert this image to bitmap
                 if (previewFrameListener != null) {
@@ -133,9 +134,9 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
 
     override suspend fun start() {
         stateLock.withLock {
-            startCapturing()
             encoder = Encoder()
             encoder!!.start()
+            startCapturing()
         }
     }
 
@@ -150,6 +151,7 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
                     set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(30, 30))
                     set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, 3)
                     addTarget(previewImageReader.surface)
+                    addTarget(encoder!!.surface)
                     build()
                 }
 
@@ -306,6 +308,7 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
         suspendCoroutine { cont ->
             val outputSurface = buildList {
                 add(previewImageReader.surface)
+                add(encoder!!.surface)
             }
 
             cameraDevice.createCaptureSession(
@@ -344,12 +347,11 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
 
     private inner class Encoder {
         var outputChannel: SendChannel<Pair<ByteArray, BufferInfo>>? = null
-        val inputChannel = Channel<YUV420>(Channel.BUFFERED)
+        lateinit var surface: Surface
 
         val formatDeferred = CompletableDeferred<MediaFormat>()
 
         private val looperThread = HandlerThread("EncoderLooper").apply { start() }
-        private val codecEvent = Channel<CodecEvent>()
         private val scope = CoroutineScope(Dispatchers.Default)
         private lateinit var mediaCodec: MediaCodec
 
@@ -358,15 +360,16 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
             val format = createFormat()
 
             mediaCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            surface = mediaCodec.createInputSurface()
             mediaCodec.start()
 
             scope.launch {
+                var index: Int
                 while (isActive) {
-                    var index = mediaCodec.dequeueInputBuffer(0)
-                    if (index >= 0) {
-                        queueInputBuffer(mediaCodec, index)
-                    }
-
+//                    var index = mediaCodec.dequeueInputBuffer(0)
+//                    if (index >= 0) {
+//                        queueInputBuffer(mediaCodec, index)
+//                    }
                     val info = BufferInfo()
                     index = mediaCodec.dequeueOutputBuffer(info, 0)
                     if (index >= 0) {
@@ -379,7 +382,7 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
         }
 
 
-        private suspend fun queueInputBuffer(codec: MediaCodec, index: Int) {
+      /*  private suspend fun queueInputBuffer(codec: MediaCodec, index: Int) {
             val data: YUV420 = inputChannel.receive()
 
             codec.getInputImage(index)?.let { codecInputImage: Image ->
@@ -394,7 +397,7 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
 
             val size = data.width * data.height * 3 / 2
             codec.queueInputBuffer(index, 0, size, data.timestampUs, 0)
-        }
+        }*/
 
 
         private suspend fun processOutputBuffer(codec: MediaCodec, index: Int, info: BufferInfo) {
@@ -423,20 +426,18 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
             // Cancel the scope itself
             scope.cancel()
 
-            // Close the codec event channel
-            codecEvent.close()
-
             // Safely stop and release the media codec
             try {
                 mediaCodec.stop()
                 mediaCodec.release()
+                surface.release()
                 Log.i(TAG, "MediaCodec stopped")
             } catch (e: Exception) {
                 Log.e(TAG, "Could not stop MediaCodec: ${e.message}")
             }
 
             // Close the encoder input image channel and quit the looper thread
-            inputChannel.close()
+//            inputChannel.close()
             looperThread.quitSafely()
         }
 
@@ -447,7 +448,7 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
             ).apply {
                 setInteger(
                     MediaFormat.KEY_COLOR_FORMAT,
-                    MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible
+                    MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
                 )
                 setInteger(MediaFormat.KEY_BIT_RATE, 250_000)
                 setInteger(MediaFormat.KEY_FRAME_RATE, 30)

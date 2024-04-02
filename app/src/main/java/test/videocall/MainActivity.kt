@@ -32,7 +32,6 @@ class MainActivity : ComponentActivity() {
         setContent {
             Scaffold {
                 Box(modifier = Modifier.padding(it)) {
-                    RTCCAllSample()
                     val permissionLauncher = rememberLauncherForActivityResult(contract = ActivityResultContracts.RequestMultiplePermissions()) { result -> }
 
                     if (ActivityCompat.checkSelfPermission(this@MainActivity, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
@@ -40,6 +39,9 @@ class MainActivity : ComponentActivity() {
                             permissionLauncher.launch(arrayOf(Manifest.permission.CAMERA))
                         }
                     }
+
+                    RTCCAllSample()
+//                    CameraToVideoPlayer()
                 }
             }
         }
