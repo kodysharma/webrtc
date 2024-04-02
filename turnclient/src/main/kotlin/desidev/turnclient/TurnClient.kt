@@ -12,18 +12,15 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
-import java.net.SocketAddress
 import java.net.SocketException
 import java.net.SocketTimeoutException
 import java.nio.ByteBuffer
@@ -408,7 +405,7 @@ class TurnClient(
 
         private val socketReceiveTimeout: Int = 136
         private var running = false
-        private val buffer = ByteArray(1024 * 5)
+        private val buffer = ByteArray(65000)
         private val socket: DatagramSocket = DatagramSocket()
 
         // A map of response callbacks
