@@ -1,7 +1,7 @@
 [versions]
 agp = "8.2.2"
-kotlin = "1.9.22"
-kotlinCompilerExtensionVersion = "1.5.9"
+kotlin = "1.9.23"
+kotlinCompilerExtensionVersion = "1.5.11"
 coreKtx = "1.12.0"
 junit = "4.13.2"
 junitVersion = "1.1.5"
@@ -10,10 +10,9 @@ kotlinxCoroutinesCoreVersion = "1.8.0-RC2"
 kotlinxSerializationProtobuf = "1.6.3"
 lifecycleRuntimeKtx = "2.7.0"
 activityCompose = "1.8.2"
-composeBom = "2024.02.00"
+composeBom = "2024.03.00"
 appcompat = "1.6.1"
 material = "1.11.0"
-foundationLayoutAndroid = "1.6.1"
 core = "1.12.0"
 
 [libraries]
@@ -25,6 +24,7 @@ androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecyc
 androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
 androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
 androidx-ui = { group = "androidx.compose.ui", name = "ui" }
+androidx-foundation-layout-android = { group = "androidx.compose.foundation", name = "foundation-layout-android" }
 androidx-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics" }
 androidx-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
 androidx-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
@@ -43,7 +43,6 @@ kotlin-stdlib = { group = "org.jetbrains.kotlin", name = "kotlin-stdlib", versio
 kotlin-reflect = { group = "org.jetbrains.kotlin", name = "kotlin-reflect", version.ref = "kotlin" }
 kotlin-test = { group = "org.jetbrains.kotlin", name = "kotlin-test", version.ref = "kotlin" }
 
-androidx-foundation-layout-android = { group = "androidx.compose.foundation", name = "foundation-layout-android", version.ref = "foundationLayoutAndroid" }
 androidx-core = { group = "androidx.core", name = "core", version.ref = "core" }
 coreLibraryDesugaring = { group = "com.android.tools", name = "desugar_jdk_libs", version = "2.0.4" }
 

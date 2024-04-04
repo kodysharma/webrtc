@@ -19,6 +19,7 @@ import android.os.HandlerThread
 import android.util.Log
 import android.util.Range
 import android.view.Surface
+import android.view.WindowManager
 import androidx.compose.foundation.Canvas
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -27,12 +28,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.scale
-import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import androidx.core.content.ContextCompat
 import desidev.utility.yuv.YuvToRgbConverter
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -69,10 +71,13 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
     private val yuvToRgbConverter = YuvToRgbConverter(context)
 
     private val stateLock = Mutex()
+
+    private val mutState = mutableStateOf(CameraCapture.State.INACTIVE)
     private var _state = CameraCapture.State.INACTIVE
         set(value) {
             Log.d(TAG, "State: [$field] -> [$value]")
             field = value
+            mutState.value = value
         }
 
     override val state: CameraCapture.State get() = _state
@@ -112,6 +117,9 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
     override val selectedCamera: CameraDeviceInfo
         get() = currentCamera
 
+
+    private val displayRot: Int
+
     init {
         val currentCameraCharacteristics = cameraManager.getCameraCharacteristics(currentCamera.id)
         val (width, height) = getSupportedSize(currentCameraCharacteristics, cameraQuality)
@@ -131,6 +139,27 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
                 image.close()
             }
         }, handler)
+
+        val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        windowManager.defaultDisplay.rotation
+
+        // Get the current display rotation
+        displayRot = ContextCompat.getDisplayOrDefault(context.applicationContext).rotation.let {
+            when (it) {
+                Surface.ROTATION_0 -> 0
+                Surface.ROTATION_90 -> 90
+                Surface.ROTATION_180 -> 180
+                Surface.ROTATION_270 -> 270
+                else -> throw IllegalArgumentException("Unknown rotation: $it")
+            }
+        }
+    }
+
+
+    private fun computeRelativeRotation(): Int {
+        val cameraRot = getCurrentCameraOrientation()
+        val sign = if (currentCamera.lensFacing == CameraLensFacing.FRONT) -1 else 1
+        return (cameraRot - displayRot * sign + 360) % 360
     }
 
 
@@ -272,62 +301,57 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
 
     @Composable
     override fun PreviewView(modifier: Modifier) {
-        val currentPreviewFrame = remember { mutableStateOf<ImageBitmap?>(null) }
-        // display rotation is clockwise
-        // because if the device is rotated 90 degrees counter clockwise then to compensate display is rotated 90 degrees clockwise.
-        val displayRot = LocalView.current.display.rotation.let {
-            when (it) {
-                Surface.ROTATION_0 -> 0
-                Surface.ROTATION_90 -> 90
-                Surface.ROTATION_180 -> 180
-                Surface.ROTATION_270 -> 270
-                else -> 0
+        if (mutState.value == CameraCapture.State.ACTIVE) {
+            val currentPreviewFrame = remember { mutableStateOf<ImageBitmap?>(null) }
+            val relativeRotation = remember {
+                computeRelativeRotation()
             }
-        }
 
-        val cameraRot = getCurrentCameraOrientation()
-        val sign = if (currentCamera.lensFacing == CameraLensFacing.FRONT) -1 else 1
-        val relativeRotation = (cameraRot - displayRot * sign + 360) % 360
-        val xMirror = if (currentCamera.lensFacing == CameraLensFacing.FRONT) -1f else 1f
+            val xMirror =
+                remember { if (currentCamera.lensFacing == CameraLensFacing.FRONT) -1f else 1f }
 
-        LaunchedEffect(Unit) {
-            setPreviewFrameListener { image ->
-                currentPreviewFrame.value = image.asImageBitmap()
+            LaunchedEffect(Unit) {
+                setPreviewFrameListener { image ->
+                    currentPreviewFrame.value = image.asImageBitmap()
+                }
             }
-        }
-        val image = currentPreviewFrame.value
-        if (image != null) {
-            Canvas(modifier = modifier) {
-                val scale: Float = let {
-                    val imageDimen = if (relativeRotation % 90 == 0) {
-                        with(image) { IntSize(height, width) }
-                    } else {
-                        with(image) { IntSize(width, height) }
+
+            val image = currentPreviewFrame.value
+            if (image != null) {
+                Canvas(modifier = modifier) {
+                    val scale: Float = let {
+                        val imageDimen = if (relativeRotation % 90 == 0) {
+                            with(image) { IntSize(height, width) }
+                        } else {
+                            with(image) { IntSize(width, height) }
+                        }
+
+                        val hScale = size.height / imageDimen.height
+                        val wScale = size.width / imageDimen.width
+                        max(wScale, hScale)
                     }
 
-                    val hScale = size.height / imageDimen.height
-                    val wScale = size.width / imageDimen.width
-                    max(wScale, hScale)
-                }
+                    val dstSize =
+                        IntSize(image.width * scale.roundToInt(), image.height * scale.roundToInt())
 
-                val dstSize =
-                    IntSize(image.width * scale.roundToInt(), image.height * scale.roundToInt())
+                    val imageOffset = let {
+                        val x = (size.width - dstSize.width) * 0.5f
+                        val y = (size.height - dstSize.height) * 0.5f
+                        IntOffset(x.toInt(), y.toInt())
+                    }
 
-                val imageOffset = let {
-                    val x = (size.width - dstSize.width) * 0.5f
-                    val y = (size.height - dstSize.height) * 0.5f
-                    IntOffset(x.toInt(), y.toInt())
-                }
-
-                scale(xMirror, 1f) {
-                    rotate(relativeRotation.toFloat(), center) {
-                        drawImage(
-                            image = image,
-                            srcOffset = IntOffset.Zero,
-                            srcSize = IntSize(image.width, image.height),
-                            dstOffset = imageOffset,
-                            dstSize = dstSize
-                        )
+                    clipRect {
+                        scale(xMirror, 1f) {
+                            rotate(relativeRotation.toFloat(), center) {
+                                drawImage(
+                                    image = image,
+                                    srcOffset = IntOffset.Zero,
+                                    srcSize = IntSize(image.width, image.height),
+                                    dstOffset = imageOffset,
+                                    dstSize = dstSize
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -437,8 +461,9 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
                     if (index >= 0) {
                         processOutputBuffer(mediaCodec, index, info)
                     } else if (index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                        val rotation = getCurrentCameraOrientation()
-                        formatDeferred.complete(mediaCodec.outputFormat)
+                        formatDeferred.complete(mediaCodec.outputFormat.apply {
+                            setInteger(MediaFormat.KEY_ROTATION, computeRelativeRotation())
+                        })
                     }
                 }
             }

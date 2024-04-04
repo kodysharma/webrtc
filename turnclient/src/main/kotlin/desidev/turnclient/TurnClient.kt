@@ -390,14 +390,12 @@ class TurnClient(
     }
 
     private abstract class ResponseCallback {
-        var registeredAt: Long =
-            0                  // the timestamp of the callback registration. Used to clean up on timed out.
+        var registeredAt: Long = 0                  // the timestamp of the callback registration. Used to clean up on timed out.
         abstract val timeout: Int                   // timeout value for response.
         abstract val transactionId: String          // transaction id on which this callback is registered.
         abstract fun onResponse(response: Message)
         abstract fun onTimeout()
     }
-
 
     private inner class SocketHandler : Thread() {
         val dataMessageListener: MutableMap<Int, IncomingMessage> =
@@ -543,7 +541,6 @@ class TurnClient(
             socket.send(packet)
         }
     }
-
     data class Allocation(
         val timestamp: Long, var lifetime: Duration, val iceCandidates: List<ICECandidate>
     )

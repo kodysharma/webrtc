@@ -3,6 +3,7 @@ package test.videocall
 import android.content.Context
 import android.media.MediaCodec.BufferInfo
 import android.util.Log
+import android.view.Surface
 import androidx.compose.foundation.Image
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -11,9 +12,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalView
 import desidev.rtc.media.Actor
 import desidev.rtc.media.camera.CameraCaptureImpl
 import desidev.rtc.media.player.VideoPlayer
@@ -75,7 +78,7 @@ class RTCPhone(context: Context) : Actor<RTCPhoneAction>(Dispatchers.Default) {
 
     enum class ConnectionState { DisConnected, Connected }
 
-    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private val rtc = RTC()
     private val signalClient = SignalClient()
     private val cameraCapture = CameraCaptureImpl(context)
@@ -202,22 +205,7 @@ class RTCPhone(context: Context) : Actor<RTCPhoneAction>(Dispatchers.Default) {
 
     @Composable
     fun LocalPeerView(modifier: Modifier = Modifier) {
-        val currentPreviewFrame = remember { mutableStateOf<ImageBitmap?>(null) }
-
-        LaunchedEffect(Unit) {
-            cameraCapture.setPreviewFrameListener { image ->
-                currentPreviewFrame.value = image.asImageBitmap()
-            }
-        }
-
-        if (currentPreviewFrame.value != null) {
-            Image(
-                bitmap = currentPreviewFrame.value!!,
-                contentDescription = "Camera frame",
-                contentScale = ContentScale.Crop,
-                modifier = modifier
-            )
-        }
+        cameraCapture.PreviewView(modifier = modifier)
     }
 
     override suspend fun onNextAction(action: RTCPhoneAction) {

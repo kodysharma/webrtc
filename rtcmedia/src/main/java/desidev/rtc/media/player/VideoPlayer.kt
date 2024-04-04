@@ -10,7 +10,7 @@ import android.media.MediaFormat
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
-import androidx.compose.foundation.Image
+import androidx.compose.foundation.Canvas
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -18,7 +18,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import desidev.rtc.media.FrameScheduler
 import desidev.utility.yuv.YuvToRgbConverter
 import kotlinx.coroutines.CancellationException
@@ -40,6 +44,8 @@ import kotlinx.coroutines.job
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.max
+import kotlin.math.roundToInt
 
 
 sealed interface DecoderEvent {
@@ -117,7 +123,8 @@ class VideoPlayer(
         imageReader.setOnImageAvailableListener({ imReader ->
             imReader.acquireNextImage()?.let { image ->
                 if (mutFrameFlow.subscriptionCount.value > 0) {
-                    val frame = Bitmap.createBitmap(image.width, image.height, Bitmap.Config.ARGB_8888)
+                    val frame =
+                        Bitmap.createBitmap(image.width, image.height, Bitmap.Config.ARGB_8888)
                     yuvToRgbConverter.yuvToRgb(image, frame)
                     val pair = Pair(frame.asImageBitmap(), image.timestamp)
                     scope.launch { mutFrameFlow.emit(pair) }
@@ -228,6 +235,13 @@ class VideoPlayer(
     fun VideoPlayerView(modifier: Modifier = Modifier) {
         val frameScheduler = remember { FrameScheduler() }
         val currentFrame = frameScheduler.currentFrame.collectAsState(initial = null)
+        val rotation = remember {
+            try {
+                format.getInteger(MediaFormat.KEY_ROTATION)
+            } catch (e: NullPointerException) {
+                0
+            }
+        }
 
         LaunchedEffect(key1 = frameScheduler) {
             withContext(Dispatchers.Default) {
@@ -238,13 +252,41 @@ class VideoPlayer(
             }
         }
 
-        currentFrame.value?.let {
-            Image(
-                bitmap = it,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = modifier
-            )
+        currentFrame.value?.let { image ->
+            Canvas(modifier = modifier) {
+                val scale: Float = let {
+                    val imageDimen = if (rotation % 90 == 0) {
+                        with(image) { IntSize(height, width) }
+                    } else {
+                        with(image) { IntSize(width, height) }
+                    }
+
+                    val hScale = size.height / imageDimen.height
+                    val wScale = size.width / imageDimen.width
+                    max(wScale, hScale)
+                }
+
+                val dstSize =
+                    IntSize(image.width * scale.roundToInt(), image.height * scale.roundToInt())
+
+                val imageOffset = let {
+                    val x = (size.width - dstSize.width) * 0.5f
+                    val y = (size.height - dstSize.height) * 0.5f
+                    IntOffset(x.toInt(), y.toInt())
+                }
+
+                clipRect {
+                    rotate(rotation.toFloat(), center) {
+                        drawImage(
+                            image = image,
+                            srcOffset = IntOffset.Zero,
+                            srcSize = IntSize(image.width, image.height),
+                            dstOffset = imageOffset,
+                            dstSize = dstSize
+                        )
+                    }
+                }
+            }
         }
     }
 }

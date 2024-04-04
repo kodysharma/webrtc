@@ -1,6 +1,5 @@
 package test.videocall.ui
 
-import android.media.MediaCodec
 import android.media.MediaCodec.BufferInfo
 import android.media.MediaFormat
 import android.util.Log
@@ -9,6 +8,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -25,9 +25,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import desidev.rtc.media.ReceivingPort
 import desidev.rtc.media.camera.CameraCaptureImpl
-import desidev.videocall.service.rtcmsg.RTCMessage
 import desidev.rtc.media.player.VideoPlayer
 import desidev.utility.yuv.YuvToRgbConverter
+import desidev.videocall.service.rtcmsg.RTCMessage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
@@ -59,26 +59,6 @@ fun CameraToVideoPlayer() {
         Box(
             modifier = Modifier
                 .weight(1f)
-                .fillMaxWidth(), contentAlignment = Alignment.Center
-        ) {
-            Button(onClick = {
-                scope.launch {
-                    val value = !isRunning
-                    if (value) {
-                        start()
-                    } else {
-                        stop()
-                    }
-                    isRunning = value
-                }
-            }) {
-                Text(if (isRunning) "Stop" else "Start")
-            }
-        }
-
-        Box(
-            modifier = Modifier
-                .weight(1f)
                 .fillMaxWidth()
                 .border(1.dp, Color.Green), contentAlignment = Alignment.Center
         ) {
@@ -96,6 +76,22 @@ fun CameraToVideoPlayer() {
                     },
                     modifier = Modifier.fillMaxSize()
                 )
+            }
+
+            Button(onClick = {
+                scope.launch {
+                    val value = !isRunning
+                    if (value) {
+                        start()
+                    } else {
+                        stop()
+                    }
+                    isRunning = value
+                }
+            }, modifier = Modifier
+                .padding(8.dp)
+                .align(Alignment.BottomCenter)) {
+                Text(if (isRunning) "Stop" else "Start")
             }
         }
     }

@@ -14,6 +14,8 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
 import androidx.core.app.ActivityCompat
+import test.videocall.ui.CameraCaptureSample
+import test.videocall.ui.CameraToVideoPlayer
 import test.videocall.ui.RTCCAllSample
 import kotlin.system.exitProcess
 
@@ -30,16 +32,22 @@ class MainActivity : ComponentActivity() {
         setContent {
             Scaffold {
                 Box(modifier = Modifier.padding(it)) {
-                    val permissionLauncher = rememberLauncherForActivityResult(contract = ActivityResultContracts.RequestMultiplePermissions()) { result -> }
+                    val permissionLauncher =
+                        rememberLauncherForActivityResult(contract = ActivityResultContracts.RequestMultiplePermissions()) { result -> }
 
-                    if (ActivityCompat.checkSelfPermission(this@MainActivity, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                    if (ActivityCompat.checkSelfPermission(
+                            this@MainActivity,
+                            Manifest.permission.CAMERA
+                        ) != PackageManager.PERMISSION_GRANTED
+                    ) {
                         LaunchedEffect(Unit) {
                             permissionLauncher.launch(arrayOf(Manifest.permission.CAMERA))
                         }
                     }
 
-                    RTCCAllSample()
-//                    CameraToVideoPlayer()
+//                    RTCCAllSample()
+                    CameraToVideoPlayer()
+//                    CameraCaptureSample()
                 }
             }
         }
