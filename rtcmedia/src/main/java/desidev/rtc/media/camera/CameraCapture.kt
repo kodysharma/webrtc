@@ -4,6 +4,8 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.media.MediaCodec.BufferInfo
 import android.media.MediaFormat
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.channels.ReceiveChannel
 
@@ -17,6 +19,9 @@ interface CameraCapture {
     fun setPreviewFrameListener(listener: ((Bitmap) -> Unit)?)
     fun compressChannel(): ReceiveChannel<Pair<ByteArray, BufferInfo>>
     fun getMediaFormat(): Deferred<MediaFormat>
+
+    @Composable
+    fun PreviewView(modifier:  Modifier)
 
     companion object {
         fun create(context: Context): CameraCapture {

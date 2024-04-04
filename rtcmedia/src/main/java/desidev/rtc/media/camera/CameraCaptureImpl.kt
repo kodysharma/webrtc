@@ -9,7 +9,6 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
-import android.media.Image
 import android.media.ImageReader
 import android.media.MediaCodec
 import android.media.MediaCodec.BufferInfo
@@ -20,6 +19,18 @@ import android.os.HandlerThread
 import android.util.Log
 import android.util.Range
 import android.view.Surface
+import androidx.compose.foundation.Canvas
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import desidev.utility.yuv.YuvToRgbConverter
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -35,6 +46,7 @@ import kotlinx.coroutines.channels.SendChannel
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -42,6 +54,7 @@ import java.nio.ByteBuffer
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
+import kotlin.math.max
 
 /**
  * There is a Surface between the camera and encoder.
@@ -105,23 +118,9 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
         previewImageReader = ImageReader.newInstance(width, height, ImageFormat.YUV_420_888, 2)
         previewImageReader.setOnImageAvailableListener({ imageReader ->
             imageReader.acquireNextImage()?.let { image ->
-               /* val yuvImage = YUV420(
-                    width = image.width,
-                    height = image.height,
-                    y = image.planes[0].buffer.makeCopy(),
-                    u = image.planes[1].buffer.makeCopy(),
-                    v = image.planes[2].buffer.makeCopy(),
-                    timestampUs = image.timestamp / 1000
-                )
-
-                val sendResult = encoder?.inputChannel?.trySend(yuvImage)
-                if (sendResult?.isSuccess != true) {
-                    Log.e(TAG, "Failed to send image to encoder")
-                }*/
-
-                // convert this image to bitmap
                 if (previewFrameListener != null) {
-                    val frame = Bitmap.createBitmap(image.width, image.height, Bitmap.Config.ARGB_8888)
+                    val frame =
+                        Bitmap.createBitmap(image.width, image.height, Bitmap.Config.ARGB_8888)
                     yuvToRgbConverter.yuvToRgb(image, frame)
                     previewFrameListener?.invoke(frame)
                 }
@@ -162,9 +161,9 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
         }
     }
 
-
     private fun ByteBuffer.makeCopy(): ByteBuffer {
-        val buffer = if (isDirect) ByteBuffer.allocateDirect(capacity()) else ByteBuffer.allocate(capacity())
+        val buffer =
+            if (isDirect) ByteBuffer.allocateDirect(capacity()) else ByteBuffer.allocate(capacity())
 
         val position = position()
         val limit = limit()
@@ -230,21 +229,24 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
     }
 
     override suspend fun selectCamera(cameraFace: CameraLensFacing) {
-        currentCamera = cameras.first { it.lensFacing == cameraFace }
         stateLock.withLock {
             val wasActive = isActive()
             stopCamera()
+            currentCamera = cameras.first { it.lensFacing == cameraFace }
             if (wasActive) {
                 startCapturing()
             }
         }
     }
 
+    private fun getCurrentCameraOrientation(): Int {
+        return cameraManager.getCameraCharacteristics(currentCamera.id)
+            .get(CameraCharacteristics.SENSOR_ORIENTATION)!!
+    }
 
     override fun setPreviewFrameListener(listener: ((Bitmap) -> Unit)?) {
         previewFrameListener = listener
     }
-
 
     /**
      * Compressed Output Channel of audio buffers
@@ -263,6 +265,69 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
     override fun getMediaFormat(): Deferred<MediaFormat> {
         return encoder?.formatDeferred
             ?: throw IllegalStateException("Encoder is not started yet")
+    }
+
+    @Composable
+    override fun PreviewView(modifier: Modifier) {
+        val currentPreviewFrame = remember { mutableStateOf<ImageBitmap?>(null) }
+        // display rotation is clockwise
+        // because if the device is rotated 90 degrees counter clockwise then to compensate display is rotated 90 degrees clockwise.
+        val displayRot = LocalView.current.display.rotation.let {
+            when (it) {
+                Surface.ROTATION_0 -> 0
+                Surface.ROTATION_90 -> 90
+                Surface.ROTATION_180 -> 180
+                Surface.ROTATION_270 -> 270
+                else -> 0
+            }
+        }
+
+        val cameraRot = getCurrentCameraOrientation()
+        val sign = if (currentCamera.lensFacing == CameraLensFacing.FRONT) -1 else 1
+        val relativeRotation = (cameraRot - displayRot * sign + 360) % 360
+        val xMirror = if (currentCamera.lensFacing == CameraLensFacing.FRONT) -1f else 1f
+
+        LaunchedEffect(Unit) {
+            setPreviewFrameListener { image ->
+                currentPreviewFrame.value = image.asImageBitmap()
+            }
+        }
+        val image = currentPreviewFrame.value
+        if (image != null) {
+            Canvas(modifier = modifier) {
+                val imageSize = IntSize(image.width, image.height)
+                val scale: Float = let {
+                    val imageDimen = if (relativeRotation % 90 == 0) {
+                        with(image) { IntSize(height, width) }
+                    } else {
+                        with(image) { IntSize(width, height) }
+                    }
+
+                    val hScale = size.height / imageDimen.height
+                    val wScale = size.width / imageDimen.width
+                    max(wScale, hScale)
+                }
+
+                withTransform({
+                    scale(scale * xMirror, scale, center)
+                    rotate(relativeRotation.toFloat(), center)
+                }) {
+                    val imageOffset = let {
+                        val x = (size.width - image.width) * 0.5f
+                        val y = (size.height - image.height) * 0.5f
+                        IntOffset(x.toInt(), y.toInt())
+                    }
+
+                    drawImage(
+                        image = image,
+                        srcOffset = IntOffset.Zero,
+                        srcSize = imageSize,
+                        dstOffset = imageOffset,
+                        dstSize = imageSize
+                    )
+                }
+            }
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -303,9 +368,8 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
         }, handler)
     }
 
-
     private suspend fun configSession(cameraDevice: CameraDevice): CameraCaptureSession =
-        suspendCoroutine { cont ->
+        suspendCancellableCoroutine { cont ->
             val outputSurface = buildList {
                 add(previewImageReader.surface)
                 add(encoder!!.surface)
@@ -332,7 +396,6 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
             )
         }
 
-
     private fun getSupportedSize(
         characteristics: CameraCharacteristics,
         quality: CameraCapture.Quality
@@ -351,7 +414,6 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
 
         val formatDeferred = CompletableDeferred<MediaFormat>()
 
-        private val looperThread = HandlerThread("EncoderLooper").apply { start() }
         private val scope = CoroutineScope(Dispatchers.Default)
         private lateinit var mediaCodec: MediaCodec
 
@@ -366,15 +428,12 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
             scope.launch {
                 var index: Int
                 while (isActive) {
-//                    var index = mediaCodec.dequeueInputBuffer(0)
-//                    if (index >= 0) {
-//                        queueInputBuffer(mediaCodec, index)
-//                    }
                     val info = BufferInfo()
                     index = mediaCodec.dequeueOutputBuffer(info, 0)
                     if (index >= 0) {
                         processOutputBuffer(mediaCodec, index, info)
                     } else if (index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        val rotation = getCurrentCameraOrientation()
                         formatDeferred.complete(mediaCodec.outputFormat)
                     }
                 }
@@ -382,22 +441,22 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
         }
 
 
-      /*  private suspend fun queueInputBuffer(codec: MediaCodec, index: Int) {
-            val data: YUV420 = inputChannel.receive()
+        /*  private suspend fun queueInputBuffer(codec: MediaCodec, index: Int) {
+              val data: YUV420 = inputChannel.receive()
 
-            codec.getInputImage(index)?.let { codecInputImage: Image ->
-                val y = codecInputImage.planes[0].buffer
-                val u = codecInputImage.planes[1].buffer
-                val v = codecInputImage.planes[2].buffer
+              codec.getInputImage(index)?.let { codecInputImage: Image ->
+                  val y = codecInputImage.planes[0].buffer
+                  val u = codecInputImage.planes[1].buffer
+                  val v = codecInputImage.planes[2].buffer
 
-                y.put(data.y)
-                u.put(data.u)
-                v.put(data.v)
-            }
+                  y.put(data.y)
+                  u.put(data.u)
+                  v.put(data.v)
+              }
 
-            val size = data.width * data.height * 3 / 2
-            codec.queueInputBuffer(index, 0, size, data.timestampUs, 0)
-        }*/
+              val size = data.width * data.height * 3 / 2
+              codec.queueInputBuffer(index, 0, size, data.timestampUs, 0)
+          }*/
 
 
         private suspend fun processOutputBuffer(codec: MediaCodec, index: Int, info: BufferInfo) {
@@ -435,10 +494,6 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
             } catch (e: Exception) {
                 Log.e(TAG, "Could not stop MediaCodec: ${e.message}")
             }
-
-            // Close the encoder input image channel and quit the looper thread
-//            inputChannel.close()
-            looperThread.quitSafely()
         }
 
         private fun createFormat(): MediaFormat {
