@@ -27,6 +27,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.IntOffset
@@ -55,6 +57,7 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
 import kotlin.math.max
+import kotlin.math.roundToInt
 
 /**
  * There is a Surface between the camera and encoder.
@@ -295,7 +298,6 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
         val image = currentPreviewFrame.value
         if (image != null) {
             Canvas(modifier = modifier) {
-                val imageSize = IntSize(image.width, image.height)
                 val scale: Float = let {
                     val imageDimen = if (relativeRotation % 90 == 0) {
                         with(image) { IntSize(height, width) }
@@ -308,23 +310,25 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
                     max(wScale, hScale)
                 }
 
-                withTransform({
-                    scale(scale * xMirror, scale, center)
-                    rotate(relativeRotation.toFloat(), center)
-                }) {
-                    val imageOffset = let {
-                        val x = (size.width - image.width) * 0.5f
-                        val y = (size.height - image.height) * 0.5f
-                        IntOffset(x.toInt(), y.toInt())
-                    }
+                val dstSize =
+                    IntSize(image.width * scale.roundToInt(), image.height * scale.roundToInt())
 
-                    drawImage(
-                        image = image,
-                        srcOffset = IntOffset.Zero,
-                        srcSize = imageSize,
-                        dstOffset = imageOffset,
-                        dstSize = imageSize
-                    )
+                val imageOffset = let {
+                    val x = (size.width - dstSize.width) * 0.5f
+                    val y = (size.height - dstSize.height) * 0.5f
+                    IntOffset(x.toInt(), y.toInt())
+                }
+
+                scale(xMirror, 1f) {
+                    rotate(relativeRotation.toFloat(), center) {
+                        drawImage(
+                            image = image,
+                            srcOffset = IntOffset.Zero,
+                            srcSize = IntSize(image.width, image.height),
+                            dstOffset = imageOffset,
+                            dstSize = dstSize
+                        )
+                    }
                 }
             }
         }
