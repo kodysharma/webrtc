@@ -3,22 +3,15 @@ package test.videocall
 import android.content.Context
 import android.media.MediaCodec.BufferInfo
 import android.util.Log
-import android.view.Surface
-import androidx.compose.foundation.Image
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalView
 import desidev.rtc.media.Actor
+import desidev.rtc.media.AudioBuffer
+import desidev.rtc.media.VoiceRecorder
 import desidev.rtc.media.camera.CameraCaptureImpl
+import desidev.rtc.media.player.AudioPlayer
 import desidev.rtc.media.player.VideoPlayer
 import desidev.turnclient.ICECandidate
 import desidev.utility.yuv.YuvToRgbConverter
@@ -82,9 +75,12 @@ class RTCPhone(context: Context) : Actor<RTCPhoneAction>(Dispatchers.Default) {
     private val rtc = RTC()
     private val signalClient = SignalClient()
     private val cameraCapture = CameraCaptureImpl(context)
+    private val voiceRecorder = VoiceRecorder.Builder().build()
+
 
     private val mutCallStateFlow = MutableStateFlow<CallState>(CallState.NoSession)
     private val mutCameraStateFlow = MutableStateFlow(false)
+    private val mutVoiceRecorderState = MutableStateFlow(false)
     private val mutErrorSharedFlow = MutableSharedFlow<RtcPhoneException>()
     private val mutConnectionStateFlow = MutableStateFlow(ConnectionState.DisConnected)
 
@@ -95,6 +91,7 @@ class RTCPhone(context: Context) : Actor<RTCPhoneAction>(Dispatchers.Default) {
 
     private var realTimeDataJob: Job? = null
 
+    private var remoteAudioPlayer: AudioPlayer? = null
     private val remoteVideoPlayerState = MutableStateFlow<VideoPlayer?>(null)
     private val yuvToRgbConverter = YuvToRgbConverter(context)
 
@@ -106,6 +103,9 @@ class RTCPhone(context: Context) : Actor<RTCPhoneAction>(Dispatchers.Default) {
         }
 
         override fun onAudioStreamAvailable(audioFormat: RTCMessage.Format) {
+            Log.i(TAG, "onAudioStreamAvailable: $audioFormat")
+            remoteAudioPlayer = AudioPlayer(audioFormat.toMediaFormat())
+            remoteAudioPlayer?.startPlayback()
         }
 
         override fun onNextVideoSample(videoSample: Sample) {
@@ -125,17 +125,27 @@ class RTCPhone(context: Context) : Actor<RTCPhoneAction>(Dispatchers.Default) {
         }
 
         override fun onNextAudioSample(audioSample: Sample) {
+            val audioBuffer = AudioBuffer(
+                buffer = audioSample.buffer,
+                ptsUs = audioSample.ptsUs,
+                flags = audioSample.flags
+            )
+            remoteAudioPlayer?.queueAudioBuffer(audioBuffer)
         }
 
         override fun onVideoStreamDisable() {
             scope.launch {
                 remoteVideoPlayerState.value?.let {
                     remoteVideoPlayerState.value = null
+                    it.stop()
                 }
             }
         }
 
         override fun onAudioStreamDisable() {
+            val audioPlayer = remoteAudioPlayer
+            remoteAudioPlayer = null
+            audioPlayer?.stop()
         }
     }
 
@@ -171,12 +181,36 @@ class RTCPhone(context: Context) : Actor<RTCPhoneAction>(Dispatchers.Default) {
     }
 
 
+    suspend fun enableVoiceRecorder() {
+        mutVoiceRecorderState.value = true
+        voiceRecorder.start()
+    }
+
+    suspend fun disableVoiceRecorder() {
+        mutVoiceRecorderState.value = false
+        voiceRecorder.stop()
+    }
+
+
     private fun createSendingRealTimeDataJob() {
         this.realTimeDataJob = actorScope.launch {
             launch {
                 mutCameraStateFlow.collect { isCameraEnable ->
                     if (isCameraEnable) {
                         addVideoSource()
+                    }
+                }
+            }
+
+            launch {
+                mutVoiceRecorderState.collect { isVoiceRecorderEnable ->
+                    if (isVoiceRecorderEnable) {
+                        val flow = voiceRecorder.getCompressChannel().receiveAsFlow().map {
+                            Sample(it.ptsUs, it.flags, it.buffer)
+                        }
+                        val format = voiceRecorder.getCompressFormat()
+
+                        rtc.addAudioSource(format.await().toRTCFormat(), flow)
                     }
                 }
             }
@@ -405,5 +439,6 @@ sealed class RtcPhoneException(
     class NetworkError(message: String?, cause: Throwable?) : RtcPhoneException(message, cause)
     class SignalServerError(message: String?, cause: Throwable?) : RtcPhoneException(message, cause)
     class CallError(message: String?, cause: Throwable?) : RtcPhoneException(message, cause)
-    class PeerConnectionError(message: String?, cause: Throwable?) : RtcPhoneException(message, cause)
+    class PeerConnectionError(message: String?, cause: Throwable?) :
+        RtcPhoneException(message, cause)
 }

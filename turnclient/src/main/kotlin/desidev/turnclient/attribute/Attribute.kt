@@ -52,5 +52,4 @@ sealed class Attribute(val type: AttributeType) {
     ) : Attribute(AttributeType.REQUESTED_TRANSPORT)
 
     data object DontFragment : Attribute(AttributeType.DONT_FRAGMENT)
-
 }

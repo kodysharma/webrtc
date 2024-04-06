@@ -5,19 +5,26 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder.AudioSource
 import android.util.Log
+import desidev.rtc.media.codec.createAudioMediaFormat
+import desidev.utility.SpeedMeter
+import desidev.utility.asMicroSec
+import desidev.utility.asMilliSec
+import desidev.utility.times
+import desidev.utility.toInt
+import desidev.utility.toLong
+import desidev.utility.toMicroSec
+import desidev.utility.toMilliSec
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ClosedSendChannelException
+import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
-import desidev.utility.*
-import kotlinx.coroutines.DelicateCoroutinesApi
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.channels.ClosedReceiveChannelException
-import kotlinx.coroutines.channels.ClosedSendChannelException
-import kotlinx.coroutines.channels.ReceiveChannel
 
 class VoiceRecorder private constructor(
     channelConfig: Int,
@@ -34,8 +41,9 @@ class VoiceRecorder private constructor(
     private val speedMeter = SpeedMeter("VoiceRecorder")
 
     private var sendingChannel: Channel<AudioBuffer>? = null
+    private var encoder: AudioEncoder? = null
 
-    val outChannel: ReceiveChannel<AudioBuffer>
+    private val outChannel: ReceiveChannel<AudioBuffer>
         get() {
             if (sendingChannel == null) {
                 sendingChannel = Channel()
@@ -52,20 +60,26 @@ class VoiceRecorder private constructor(
         chunkSize
     )
 
-    val format: AudioFormat get() = _audioRecord.format
+    val audioFormat: AudioFormat get() = _audioRecord.format
 
-    fun start() {
+    suspend fun start() {
         _audioRecord.startRecording()
         startFlowingOutput()
+        encoder = AudioEncoder(outChannel).apply {
+            configure(createAudioMediaFormat(audioFormat))
+            start()
+        }
     }
 
-    fun stop() {
+    suspend fun stop() {
+        encoder?.stop()
+        encoder = null
         _audioRecord.stop()
         sendingChannel?.close()
         sendingChannel = null
     }
 
-    fun release() {
+    suspend fun release() {
         if (_audioRecord.state == AudioRecord.RECORDSTATE_RECORDING) {
             stop()
         }
@@ -73,6 +87,13 @@ class VoiceRecorder private constructor(
         _scope.cancel("VoiceRecorder is released")
         speedMeter.stop()
     }
+
+
+    fun getCompressChannel(): ReceiveChannel<AudioBuffer> {
+        return encoder?.outputChannel ?: throw IllegalStateException("VoiceRecorder is not started")
+    }
+
+    fun getCompressFormat() = encoder?.outputFormat ?: throw IllegalStateException("VoiceRecorder is not started")
 
     @OptIn(DelicateCoroutinesApi::class)
     private fun startFlowingOutput() = _scope.launch {
@@ -112,9 +133,9 @@ class VoiceRecorder private constructor(
     class Builder {
         private var sampleRate: Int = 24000
         private var channelConfig: Int = AudioFormat.CHANNEL_IN_MONO
-        private var audioSource: Int = AudioSource.VOICE_COMMUNICATION
+        private var audioSource: Int = AudioSource.CAMCORDER
         private var encoding: Int = AudioFormat.ENCODING_PCM_16BIT
-        private var chunkLenInMs: Long = 20
+        private var chunkLenInMs: Long = 15
         private var chunkSize: Int = -1
         private var audioRecordInternalBufferSize = -1
 

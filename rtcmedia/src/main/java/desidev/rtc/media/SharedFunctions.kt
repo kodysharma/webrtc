@@ -26,20 +26,3 @@ fun stringyFyMediaFormat(mediaFormat: MediaFormat): String {
         "Error: ${ex.message}"
     }
 }
-
-
-@OptIn(ObsoleteCoroutinesApi::class)
-fun CoroutineScope.frameScheduler(onNextFrame: (ImageBitmap) -> Unit) = actor<Pair<ImageBitmap, Long>> {
-    var previousTimestamp = -1L
-    consumeEach { (bitmap, timeStampUs) ->
-        if (previousTimestamp < 0) {
-            onNextFrame(bitmap)
-            previousTimestamp = timeStampUs
-        } else {
-            val delay = timeStampUs - previousTimestamp
-            if (delay > 0) {
-                delay(delay)
-            }
-        }
-    }
-}

@@ -14,9 +14,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
 import androidx.core.app.ActivityCompat
-import test.videocall.ui.CameraCaptureSample
-import test.videocall.ui.CameraToVideoPlayer
-import test.videocall.ui.RTCCAllSample
+import test.videocall.ui.AudioEchoSample
 import kotlin.system.exitProcess
 
 class MainActivity : ComponentActivity() {
@@ -46,8 +44,9 @@ class MainActivity : ComponentActivity() {
                     }
 
 //                    RTCCAllSample()
-                    CameraToVideoPlayer()
+//                    CameraToVideoPlayer()
 //                    CameraCaptureSample()
+                    AudioEchoSample()
                 }
             }
         }

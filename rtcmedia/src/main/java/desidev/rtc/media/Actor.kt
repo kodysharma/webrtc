@@ -1,5 +1,6 @@
 package desidev.rtc.media
 
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ObsoleteCoroutinesApi
 import kotlinx.coroutines.cancel
@@ -35,4 +36,20 @@ abstract class Actor<A>(coroutineContext: CoroutineContext){
     }
 }
 
+
+
+open class Action<R> {
+    val deferred: CompletableDeferred<R> = CompletableDeferred()
+    suspend fun await(): R {
+        return deferred.await()
+    }
+
+    suspend fun complete(result: R) {
+        deferred.complete(result)
+    }
+
+    suspend fun completeExceptionally(ex: Throwable) {
+        deferred.completeExceptionally(ex)
+    }
+}
 

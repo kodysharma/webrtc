@@ -8,7 +8,7 @@ import java.util.concurrent.ConcurrentLinkedQueue
 class BitmapPool(
     val dimen: Size,                                                    // Dimension of the bitmaps inside the pool
     val config: Bitmap.Config = Bitmap.Config.ARGB_8888,                // Bitmap configuration
-    private val capacity: Int = 10,                                             // Maximum number of bitmaps in the pool
+    private val capacity: Int = 10,                                     // Maximum number of bitmaps in the pool
     initialSize: Int = 4
 ) {
     private val pool = ConcurrentLinkedQueue<Bitmap>()

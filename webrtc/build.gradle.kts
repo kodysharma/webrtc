@@ -60,7 +60,7 @@ dependencies {
     coreLibraryDesugaring(libs.coreLibraryDesugaring)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
-    androidTestImplementation("androidx.test:rules:1.5.0")
+    androidTestImplementation(libs.androidx.rules)
     androidTestImplementation(libs.androidx.espresso.core)
 
 }

@@ -57,61 +57,56 @@ class RTC {
     private var remoteVideoStreamFormat: RTCMessage.Format? = null
     private var remoteAudioStreamFormat: RTCMessage.Format? = null
 
+    sealed class Action<T> {
+        val deferred = CompletableDeferred<T>()
 
-    sealed interface Action {
-        data class AddRemoteIce(val iceCandidate: List<ICECandidate>) : Action
-        data object ClearRemoteIce : Action
-        data class CreateLocalIce(
-            val onSuccess: () -> Unit, val
-            onFailure: (ex: Throwable) -> Unit
-        ) : Action
+        data class AddRemoteIce(val iceCandidate: List<ICECandidate>) : Action<Unit>()
+        data object ClearRemoteIce : Action<Unit>()
+        data object CreateLocalIce : Action<Unit>()
 
-        data class CreatePeerConnection(
-            val onSuccess: () -> Unit,
-            val onFailure: (ex: Throwable) -> Unit
-        ) : Action
+        data object CreatePeerConnection : Action<Unit>()
 
-        data class ClosePeerConnection(
-            val onSuccess: () -> Unit,
-            val onFailure: (ex: Throwable) -> Unit
-        ) : Action
+        data object ClosePeerConnection : Action<Unit>()
 
         data class AddVideoStream(
             val format: RTCMessage.Format,
             val samples: Flow<RTCMessage.Sample>
-        ) : Action
+        ) : Action<Unit>()
 
         data class AddAudioStream(
             val format: RTCMessage.Format,
             val samples: Flow<RTCMessage.Sample>
-        ) : Action
+        ) : Action<Unit>()
 
-        data class OnStreamEnable(val type: StreamType, val format: RTCMessage.Format) : Action
-        data class OnStreamDisable(val type: StreamType) : Action
-        data class OnNextVideoSample(val sample: RTCMessage.Sample) : Action
-        data class OnNextAudioSample(val sample: RTCMessage.Sample) : Action
+        data class OnStreamEnable(val type: StreamType, val format: RTCMessage.Format) :
+            Action<Unit>()
+
+        data class OnStreamDisable(val type: StreamType) : Action<Unit>()
+        data class OnNextVideoSample(val sample: RTCMessage.Sample) : Action<Unit>()
+        data class OnNextAudioSample(val sample: RTCMessage.Sample) : Action<Unit>()
     }
 
-
     @OptIn(ObsoleteCoroutinesApi::class)
-    val rtcActor = scope.actor<Action> {
+    val rtcActor = scope.actor<Action<*>> {
         consumeEach { action ->
             when (action) {
                 is Action.AddRemoteIce -> {
                     remoteIce = action.iceCandidate
+                    action.deferred.complete(Unit)
                 }
 
                 is Action.ClearRemoteIce -> {
                     remoteIce = null
+                    action.deferred.complete(Unit)
                 }
 
                 is Action.CreateLocalIce -> {
                     val result = turn.createAllocation()
                     if (result.isSuccess) {
                         localIce = result.getOrThrow()
-                        action.onSuccess()
+                        action.deferred.complete(Unit)
                     } else {
-                        action.onFailure(result.exceptionOrNull()!!)
+                        action.deferred.completeExceptionally(result.exceptionOrNull()!!)
                         Log.e(TAG, "Failed to create allocation", result.exceptionOrNull())
                     }
                 }
@@ -136,9 +131,9 @@ class RTC {
                             throw result.exceptionOrNull()!!
                         }
 
-                        action.onSuccess()
+                        action.deferred.complete(Unit)
                     } catch (ex: Exception) {
-                        action.onFailure(ex)
+                        action.deferred.completeExceptionally(ex)
                     }
                 }
 
@@ -155,34 +150,36 @@ class RTC {
 
                         turn.deleteAllocation()
                         dataChannel = null
-                        action.onSuccess()
+                        action.deferred.complete(Unit)
                     } catch (e: IOException) {
                         Log.e(TAG, "Failed to close peer connection", e)
-                        action.onFailure(e)
+                        action.deferred.completeExceptionally(e)
                     }
                 }
 
                 is Action.AddVideoStream -> {
                     addVideoStream(action.format, action.samples)
+                    action.deferred.complete(Unit)
                 }
 
                 is Action.AddAudioStream -> {
                     addAudioStream(action.format, action.samples)
+                    action.deferred.complete(Unit)
                 }
 
                 is Action.OnStreamEnable -> {
                     if (action.type == StreamType.Video) {
-
                         if (remoteVideoStreamFormat == null) {
                             trackListener?.onVideoStreamAvailable(action.format)
                             remoteVideoStreamFormat = action.format
                         }
                     } else if (action.type == StreamType.Audio) {
-                        if (remoteAudioStreamFormat != null) {
+                        if (remoteAudioStreamFormat == null) {
                             trackListener?.onAudioStreamAvailable(action.format)
                             remoteAudioStreamFormat = action.format
                         }
                     }
+                    action.deferred.complete(Unit)
                 }
 
                 is Action.OnStreamDisable -> {
@@ -193,28 +190,24 @@ class RTC {
                         remoteAudioStreamFormat = null
                         trackListener?.onAudioStreamDisable()
                     }
+                    action.deferred.complete(Unit)
                 }
 
                 is Action.OnNextVideoSample -> {
                     trackListener?.onNextVideoSample(action.sample)
+                    action.deferred.complete(Unit)
                 }
 
                 is Action.OnNextAudioSample -> {
                     trackListener?.onNextAudioSample(action.sample)
+                    action.deferred.complete(Unit)
                 }
             }
         }
     }
 
     suspend fun createLocalIce() {
-        val deferred = CompletableDeferred<Unit>()
-        rtcActor.send(
-            Action.CreateLocalIce(
-                onSuccess = { deferred.complete(Unit) },
-                onFailure = { ex -> deferred.completeExceptionally(ex) }
-            )
-        )
-        deferred.await()
+        rtcActor.send(Action.CreateLocalIce)
     }
 
     suspend fun addRemoteIce(iceCandidate: List<ICECandidate>) {
@@ -222,34 +215,34 @@ class RTC {
     }
 
     suspend fun createPeerConnection() {
-        val deferred = CompletableDeferred<Unit>()
-        rtcActor.send(Action.CreatePeerConnection(
-            onSuccess = { deferred.complete(Unit) },
-            onFailure = { ex -> deferred.completeExceptionally(ex) }
-        ))
-        deferred.await()
+        val action = Action.CreatePeerConnection
+        rtcActor.send(action)
+        action.deferred.await()
     }
 
     suspend fun closePeerConnection() {
-        val deferred = CompletableDeferred<Unit>()
-        rtcActor.send(Action.ClosePeerConnection(
-            onSuccess = { deferred.complete(Unit) },
-            onFailure = { ex -> deferred.completeExceptionally(ex) }
-        ))
-        deferred.await()
+        val action = Action.ClosePeerConnection
+        rtcActor.send(action)
+        action.deferred.await()
     }
 
     suspend fun addVideoSource(format: RTCMessage.Format, samples: Flow<RTCMessage.Sample>) {
-        rtcActor.send(Action.AddVideoStream(format, samples))
+        val action = Action.AddVideoStream(format, samples)
+        rtcActor.send(action)
+        action.deferred.await()
     }
 
     suspend fun addAudioSource(format: RTCMessage.Format, samples: Flow<RTCMessage.Sample>) {
-        rtcActor.send(Action.AddAudioStream(format, samples))
+        val action = Action.AddAudioStream(format, samples)
+        rtcActor.send(action)
+        action.deferred.await()
     }
 
 
     suspend fun clearRemoteIce() {
-        rtcActor.send(Action.ClearRemoteIce)
+        val action = Action.ClearRemoteIce
+        rtcActor.send(action)
+        action.deferred.await()
     }
 
     fun setTrackListener(trackListener: TrackListener) {
@@ -278,21 +271,21 @@ class RTC {
                     if (control.streamEnable != null) {
                         val streamEnable = control.streamEnable
                         scope.launch {
+                            val action =
+                                Action.OnStreamEnable(streamEnable.type, streamEnable.format)
+                            rtcActor.send(action)
+                            action.deferred.await()
                             sendAck(control.txId)
-                            rtcActor.send(
-                                Action.OnStreamEnable(
-                                    streamEnable.type,
-                                    streamEnable.format
-                                )
-                            )
                         }
                     }
 
                     if (control.streamDisable != null) {
                         val streamDisable = control.streamDisable
                         scope.launch {
+                            val action = Action.OnStreamDisable(streamDisable.streamType)
+                            rtcActor.send(action)
+                            action.deferred.await()
                             sendAck(control.txId)
-                            rtcActor.send(Action.OnStreamDisable(streamDisable.streamType))
                         }
                     }
 

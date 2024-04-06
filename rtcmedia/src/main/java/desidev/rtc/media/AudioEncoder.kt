@@ -23,18 +23,18 @@ import kotlinx.coroutines.job
 import kotlinx.coroutines.joinAll
 import java.nio.ByteBuffer
 
-class AudioEncoderActor(
+class AudioEncoder(
     private val rawAudioBufferChannel: ReceiveChannel<AudioBuffer>
-) : Actor<AudioEncoderActor.EncoderAction>(Dispatchers.Default) {
+) : Actor<AudioEncoder.EncoderAction<*>>(Dispatchers.Default) {
 
     companion object {
-        val TAG = AudioEncoderActor::class.simpleName
+        val TAG = AudioEncoder::class.simpleName
     }
 
-    sealed interface EncoderAction {
-        data object Start : EncoderAction
-        data object Stop : EncoderAction
-        data class Configure(val format: MediaFormat) : EncoderAction
+    sealed class EncoderAction<R>: Action<R>() {
+        data object Start : EncoderAction<Unit>()
+        data object Stop : EncoderAction<Unit>()
+        data class Configure(val format: MediaFormat) : EncoderAction<Unit>()
     }
 
 
@@ -48,6 +48,7 @@ class AudioEncoderActor(
 
         data class OnOutputFormatChanged(val format: MediaFormat) : CodecEvent
     }
+
 
 
     val outputChannel = Channel<AudioBuffer>(Channel.BUFFERED)
@@ -101,13 +102,33 @@ class AudioEncoderActor(
         }
     }
 
-    override suspend fun onNextAction(action: EncoderAction) {
+
+    suspend fun configure(format: MediaFormat) {
+        val action = EncoderAction.Configure(format)
+        send(action)
+        action.await()
+    }
+
+    suspend fun start() {
+        val action = EncoderAction.Start
+        send(action)
+        action.await()
+    }
+
+    suspend fun stop() {
+        val action = EncoderAction.Stop
+        send(action)
+        action.await()
+    }
+
+    override suspend fun onNextAction(action: EncoderAction<*>) {
         when (action) {
             is EncoderAction.Start -> {
                 mediaCodec.start()
+                action.complete(Unit)
             }
 
-            EncoderAction.Stop -> {
+            is EncoderAction.Stop -> {
                 with(handlerScope.coroutineContext.job) {
                     cancelChildren()
                     children.toList().joinAll()
@@ -123,12 +144,14 @@ class AudioEncoderActor(
                 } catch (e: Exception) {
                     Log.e(TAG, "Could not stop media codec")
                 }
+                action.complete(Unit)
             }
 
             is EncoderAction.Configure -> {
                 mediaCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
                 listenCodecEvent()
                 mediaCodec.configure(action.format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                action.complete(Unit)
             }
         }
     }

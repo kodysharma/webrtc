@@ -1,6 +1,10 @@
 package test.videocall.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.util.Log
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -43,6 +47,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.constraintlayout.compose.ConstraintLayout
+import androidx.core.app.ActivityCompat
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.launch
 import test.videocall.R
@@ -67,14 +72,37 @@ fun RTCCAllSample() {
     val rtcPhone = remember { RTCPhone(context) }
     var currentScreen by remember { mutableStateOf<Screen>(Screen.Home) }
 
+    // check permissions
+    val permissions = arrayOf(
+        Manifest.permission.CAMERA,
+        Manifest.permission.RECORD_AUDIO,
+    )
+
+    if (!permissions.all {
+            ActivityCompat.checkSelfPermission(
+                context,
+                it
+            ) == PackageManager.PERMISSION_GRANTED
+        }) {
+
+        val permissionLauncher =
+            rememberLauncherForActivityResult(contract = ActivityResultContracts.RequestMultiplePermissions()) {}
+
+        LaunchedEffect(Unit) {
+            permissionLauncher.launch(permissions)
+        }
+    }
+
     LaunchedEffect(Unit) {
         rtcPhone.callStateFlow.collect {
             if (it is CallState.InSession || it is CallState.CallingToPeer || it is CallState.IncomingCall) {
                 if (!rtcPhone.cameraStateFlow.value) {
                     rtcPhone.enableCamera()
+                    rtcPhone.enableVoiceRecorder()
                 }
             } else {
                 if (rtcPhone.cameraStateFlow.value) {
+                    rtcPhone.disableVoiceRecorder()
                     rtcPhone.disableCamera()
                 }
             }
@@ -106,7 +134,6 @@ fun RTCCAllSample() {
             }
         }
     }
-
 
     AnimatedContent(targetState = currentScreen, label = "") { screen ->
         when (screen) {

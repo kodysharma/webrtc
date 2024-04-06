@@ -52,7 +52,9 @@ android {
 }
 
 dependencies {
-    implementation("androidx.constraintlayout:constraintlayout-compose:1.0.1")
+    implementation(project(":webrtc"))
+
+    implementation(libs.androidx.constraintlayout.compose)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
@@ -66,6 +68,7 @@ dependencies {
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.ui.test.junit4)
+
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
 
@@ -79,7 +82,9 @@ dependencies {
     implementation("io.ktor:ktor-serialization-gson:$ktor_version")
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.gson)
-    implementation(project(":webrtc"))
+
+    androidTestImplementation(libs.androidx.rules)
+
 
     coreLibraryDesugaring(libs.coreLibraryDesugaring)
 }

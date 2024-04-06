@@ -17,11 +17,15 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.consumeAsFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
 
 
+/**
+ * Onetime use audio player. Don't use it after stop.
+ */
 class AudioPlayer(
     private val format: MediaFormat,
 ) : CoroutineScope {
@@ -34,7 +38,7 @@ class AudioPlayer(
     private val coroutineExceptionHandler =
         CoroutineExceptionHandler { _, throwable -> throwable.printStackTrace() }
 
-    private val audioSamplesFlow = Channel<AudioBuffer>()
+    private val audioSamplesFlow = Channel<AudioBuffer>(Channel.CONFLATED)
 
     /**
      * As the inputformat becomes available. It will start audio Track.
@@ -67,7 +71,7 @@ class AudioPlayer(
             var trackInputSamples: Flow<AudioBuffer> = inputSamples
 
             if (mime !=  MediaFormat.MIMETYPE_AUDIO_RAW) {
-                suspendCoroutine { cont ->
+                suspendCancellableCoroutine { cont ->
                     trackInputSamples = audioDecoding(inputSamples, inputFormat) {
                         cont.resume(Unit)
                         trackInputFormat = it
@@ -90,6 +94,7 @@ class AudioPlayer(
                 trackBufferSize,
                 AudioTrack.MODE_STREAM
             )
+
             audioTrack!!.play()
 
             try {

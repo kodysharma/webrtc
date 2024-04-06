@@ -30,7 +30,7 @@ fun CoroutineScope.audioDecoding(
             inputChannel.collect {
                 val inBuffIx = decoder.dequeueInputBuffer(timeout)
                 if (inBuffIx >= 0) {
-                    Log.d(TAG, "input data size = ${it.buffer.size}")
+//                    Log.d(TAG, "input data size = ${it.buffer.size}")
                     val inputBuffer = decoder.getInputBuffer(inBuffIx)!!
                     inputBuffer.clear()
                     inputBuffer.put(it.buffer)
