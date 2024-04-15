@@ -331,8 +331,10 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
                         max(wScale, hScale)
                     }
 
-                    val dstSize =
-                        IntSize(image.width * scale.roundToInt(), image.height * scale.roundToInt())
+                    val dstSize = IntSize(
+                            (image.width * scale).roundToInt(),
+                            (image.height * scale).roundToInt()
+                        )
 
                     val imageOffset = let {
                         val x = (size.width - dstSize.width) * 0.5f
