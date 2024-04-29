@@ -6,9 +6,11 @@ import android.os.Environment
 import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
@@ -26,6 +28,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
@@ -50,7 +53,8 @@ fun CameraCaptureSample(modifier: Modifier = Modifier) {
 
     fun startRecording() {
         scope.launch {
-            cameraCapture.start()
+            cameraCapture.openCamera()
+            cameraCapture.startCapture()
             val channel = cameraCapture.compressChannel()
             var muxer: MediaMuxerWrapper? = null
             try {
@@ -78,7 +82,7 @@ fun CameraCaptureSample(modifier: Modifier = Modifier) {
 
     fun stopRecording() {
         scope.launch {
-            cameraCapture.stop()
+            cameraCapture.closeCamera()
         }
     }
 
@@ -114,7 +118,14 @@ fun CameraCaptureSample(modifier: Modifier = Modifier) {
 
     Surface(modifier = modifier.fillMaxSize()) {
         Box {
-            cameraCapture.PreviewView(modifier = Modifier.fillMaxSize())
+            cameraCapture.PreviewView(
+                modifier = Modifier
+                    .padding(16.dp)
+                    .fillMaxSize(0.40f)
+                    .aspectRatio(9 / 16f)
+                    .border(1.dp, Color.Black)
+                    .align(Alignment.BottomEnd)
+            )
 
             Row(
                 modifier = Modifier
@@ -135,10 +146,9 @@ fun CameraCaptureSample(modifier: Modifier = Modifier) {
 
                 IconButton(onClick = {
                     scope.launch {
-                        cameraCapture.selectCamera(
-                            if (cameraCapture.selectedCamera.lensFacing == desidev.rtc.media.camera.CameraLensFacing.FRONT) desidev.rtc.media.camera.CameraLensFacing.BACK
-                            else desidev.rtc.media.camera.CameraLensFacing.FRONT
-                        )
+                        cameraCapture.apply {
+                            selectCamera(getCameras().first { it != selectedCamera.value })
+                        }
                     }
                 }) {
                     Icon(

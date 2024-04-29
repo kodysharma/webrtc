@@ -3,16 +3,21 @@ package test.videocall.ui
 import android.media.MediaCodec.BufferInfo
 import android.media.MediaFormat
 import android.util.Log
-import androidx.compose.foundation.border
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -20,107 +25,146 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
-import desidev.rtc.media.ReceivingPort
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.LifecycleObserver
+import androidx.lifecycle.LifecycleOwner
+import ch.qos.logback.core.spi.LifeCycle
+import desidev.rtc.media.camera.CameraCapture.CameraState
 import desidev.rtc.media.camera.CameraCaptureImpl
 import desidev.rtc.media.player.VideoPlayer
+import desidev.rtc.rtcmsg.RTCMessage
 import desidev.utility.yuv.YuvToRgbConverter
-import desidev.videocall.service.rtcmsg.RTCMessage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.receiveAsFlow
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 
 
 @Composable
 fun CameraToVideoPlayer() {
     val context = LocalContext.current
     val cameraCapture = remember { CameraCaptureImpl(context) }
-    var isRunning by remember { mutableStateOf(false) }
+    val cameraState by cameraCapture.state.collectAsState()
+    var format by remember { mutableStateOf<MediaFormat?>(null) }
     val scope = rememberCoroutineScope()
+    var isCaptureStarted by remember { mutableStateOf(false) }
+
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+
+    LaunchedEffect(cameraState) {
+        if (cameraState == CameraState.INACTIVE) {
+            isCaptureStarted = false
+        }
+    }
+
+    DisposableEffect(key1 = Unit) {
+        val observer = LifecycleEventObserver { _, event ->
+            when(event) {
+                Lifecycle.Event.ON_RESUME -> {
+                    Log.d("CameraToVideoPlayer", "ON_RESUME")
+                    scope.launch {
+                        cameraCapture.openCamera()
+                    }
+                }
+                Lifecycle.Event.ON_PAUSE -> {
+                    Log.d("CameraToVideoPlayer", "ON_PAUSE")
+                    scope.launch {
+                        cameraCapture.closeCamera()
+                    }
+                }
+
+                else -> { }
+            }
+        }
+        lifecycle.addObserver(observer)
+        onDispose {
+            lifecycle.removeObserver(observer)
+        }
+    }
 
     suspend fun start() {
-        cameraCapture.start()
+        cameraCapture.startCapture()
+        format = cameraCapture.getMediaFormat().await()
         Log.d("CameraToVideoPlayer", "start")
     }
 
     suspend fun stop() {
-        cameraCapture.stop()
+        cameraCapture.stopCapture()
         Log.d("CameraToVideoPlayer", "stop")
     }
 
-    Column {
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .border(1.dp, Color.Green), contentAlignment = Alignment.Center
-        ) {
-            if (isRunning) {
-                VideoPlayerView(
-                    format = runBlocking { cameraCapture.getMediaFormat().await() },
-                    samples = cameraCapture.compressChannel().receiveAsFlow().map {
-                        it.run {
-                            RTCMessage.Sample(
-                                ptsUs = second.presentationTimeUs,
-                                buffer = first,
-                                flags = second.flags
-                            )
-                        }
-                    },
-                    modifier = Modifier.fillMaxSize()
-                )
-            }
+    BoxWithConstraints(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier.fillMaxSize()
+    ) {
+        val halfHeight = (maxHeight.value / 2).dp
+        if (isCaptureStarted && format != null) {
+            VideoPlayerView(
+                format = format!!,
+                samples = cameraCapture.compressChannel().receiveAsFlow().map {
+                    it.run {
+                        RTCMessage.Sample(
+                            ptsUs = second.presentationTimeUs, buffer = first, flags = second.flags
+                        )
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(halfHeight)
+                    .align(Alignment.TopCenter)
+            )
+        }
 
-            Button(onClick = {
+        // preview
+        cameraCapture.PreviewView(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .height(halfHeight)
+                .fillMaxWidth()
+        )
+
+        Button(
+            onClick = {
                 scope.launch {
-                    val value = !isRunning
-                    if (value) {
+                    isCaptureStarted = !isCaptureStarted
+                    if (isCaptureStarted) {
                         start()
                     } else {
                         stop()
                     }
-                    isRunning = value
                 }
-            }, modifier = Modifier
+            },
+            modifier = Modifier
                 .padding(8.dp)
-                .align(Alignment.BottomCenter)) {
-                Text(if (isRunning) "Stop" else "Start")
-            }
+                .align(Alignment.BottomEnd)
+        ) {
+            Text(text = if (isCaptureStarted) "Stop" else "Start")
+        }
+
+        FilledIconButton(
+            onClick = {
+                scope.launch {
+                    cameraCapture.apply { selectCamera(getCameras().first { it != selectedCamera.value }) }
+                }
+            },
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(8.dp)
+        ) {
+            Icon(imageVector = Icons.Default.Refresh, contentDescription = null)
         }
     }
 }
 
 
-private fun flowOfSamples(port: ReceivingPort<Pair<ByteArray, BufferInfo>>) =
-    channelFlow {
-        while (port.isOpenForReceive && isActive) {
-            try {
-                send(port.receive().run {
-                    RTCMessage.Sample(
-                        ptsUs = second.presentationTimeUs,
-                        buffer = first,
-                        flags = second.flags
-                    )
-                })
-            } catch (ex: Exception) {
-                ex.printStackTrace()
-            }
-        }
-    }
-
-
 @Composable
 fun VideoPlayerView(
-    format: MediaFormat,
-    samples: Flow<RTCMessage.Sample>,
-    modifier: Modifier = Modifier
+    format: MediaFormat, samples: Flow<RTCMessage.Sample>, modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val yuvToRgbConverter = remember { YuvToRgbConverter(context) }
@@ -137,14 +181,11 @@ fun VideoPlayerView(
         videoPlayer.play()
         scope.launch(Dispatchers.Default) {
             samples.collect { sample ->
-                videoPlayer.inputData(
-                    buffer = sample.buffer,
-                    info = BufferInfo().apply {
-                        size = sample.buffer.size
-                        presentationTimeUs = sample.ptsUs
-                        flags = sample.flags
-                    }
-                )
+                videoPlayer.inputData(buffer = sample.buffer, info = BufferInfo().apply {
+                    size = sample.buffer.size
+                    presentationTimeUs = sample.ptsUs
+                    flags = sample.flags
+                })
             }
         }
         onDispose {

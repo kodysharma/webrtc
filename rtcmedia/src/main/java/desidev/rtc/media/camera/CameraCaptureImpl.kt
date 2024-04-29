@@ -23,6 +23,8 @@ import android.view.WindowManager
 import androidx.compose.foundation.Canvas
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
@@ -31,33 +33,35 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.scale
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.core.content.ContextCompat
+import desidev.rtc.media.camera.CameraCapture.CameraState
 import desidev.utility.yuv.YuvToRgbConverter
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
-import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.ObsoleteCoroutinesApi
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedSendChannelException
-import kotlinx.coroutines.channels.SendChannel
+import kotlinx.coroutines.channels.ReceiveChannel
+import kotlinx.coroutines.channels.actor
+import kotlinx.coroutines.channels.consumeEach
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
+import online.desidev.kotlinutils.Action
+import online.desidev.kotlinutils.sendAction
 import java.nio.ByteBuffer
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
-import kotlin.coroutines.suspendCoroutine
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -70,25 +74,24 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
     private val handler = Handler(handlerThread.looper)
     private val yuvToRgbConverter = YuvToRgbConverter(context)
 
-    private val stateLock = Mutex()
+    private val scope = CoroutineScope(Dispatchers.Default)
 
-    private val mutState = mutableStateOf(CameraCapture.State.INACTIVE)
-    private var _state = CameraCapture.State.INACTIVE
-        set(value) {
-            Log.d(TAG, "State: [$field] -> [$value]")
-            field = value
-            mutState.value = value
-        }
+    /**
+     * Action runner run the operations in sequence that updates the state of the camera
+     */
+    @OptIn(ObsoleteCoroutinesApi::class)
+    private val actionRunner = scope.actor<Action<*>> {
+        consumeEach { it.execute() }
+    }
 
-    override val state: CameraCapture.State get() = _state
+    private val _state = MutableStateFlow<CameraState>(CameraState.INACTIVE)
+    override val state: StateFlow<CameraState> = _state
 
     private val cameraManager: CameraManager =
         context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
 
     private var previewFrameListener: ((Bitmap) -> Unit)? = null
-
     private val previewImageReader: ImageReader
-
     private var encoder: Encoder? = null
 
     private val cameras: List<CameraDeviceInfo> = cameraManager.cameraIdList.map { id ->
@@ -104,26 +107,21 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
         }
     }
 
-    private lateinit var _sessionCloseDeferred: CompletableDeferred<Unit>
+    private val _selectedCamera =
+        MutableStateFlow(cameras.find { it.lensFacing == CameraLensFacing.FRONT }
+            ?: cameras.first())
 
+    override val selectedCamera: StateFlow<CameraDeviceInfo> = _selectedCamera
 
-    private lateinit var _cameraCloseDeferred: CompletableDeferred<Unit>
-    private lateinit var _session: CameraCaptureSession
-
+    private var cameraDevice: CameraDevice? = null
+    private var session: CameraCaptureSession? = null
     private val cameraQuality: CameraCapture.Quality = CameraCapture.Quality.Lowest
-
-    private var currentCamera: CameraDeviceInfo =
-        cameras.find { it.lensFacing == CameraLensFacing.FRONT }!!
-    override val selectedCamera: CameraDeviceInfo
-        get() = currentCamera
-
-
     private val displayRot: Int
 
     init {
-        val currentCameraCharacteristics = cameraManager.getCameraCharacteristics(currentCamera.id)
+        val currentCameraCharacteristics =
+            cameraManager.getCameraCharacteristics(selectedCamera.value.id)
         val (width, height) = getSupportedSize(currentCameraCharacteristics, cameraQuality)
-
         Log.d(TAG, "OutputSize: $width x $height")
 
         previewImageReader = ImageReader.newInstance(width, height, ImageFormat.YUV_420_888, 2)
@@ -158,141 +156,220 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
 
     private fun computeRelativeRotation(): Int {
         val cameraRot = getCurrentCameraOrientation()
-        val sign = if (currentCamera.lensFacing == CameraLensFacing.FRONT) -1 else 1
+        val sign = if (selectedCamera.value.lensFacing == CameraLensFacing.FRONT) -1 else 1
         return (cameraRot - displayRot * sign + 360) % 360
     }
 
-
-    override suspend fun start() {
-        stateLock.withLock {
-            encoder = Encoder()
-            encoder!!.start()
-            startCapturing()
-        }
+    override suspend fun openCamera() {
+        actionRunner.sendAction {
+            cameraDevice = openCameraDevice()
+            session = configSession(cameraDevice!!)
+            session?.createCaptureRequest()
+            _state.value = CameraState.ACTIVE
+        }.await()
     }
 
-    private suspend fun startCapturing() {
-        if (_state == CameraCapture.State.INACTIVE) {
-            val camDevice = openCamera()
 
-            _session = configSession(camDevice)
+    override suspend fun closeCamera() {
+        actionRunner.sendAction {
+            _state.value = CameraState.INACTIVE
+            session?.close()
+            session = null
+            cameraDevice?.close()
+            cameraDevice = null
 
-            val recordRequest = camDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
-                .run {
-                    set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(30, 30))
-                    set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, 3)
-                    addTarget(previewImageReader.surface)
-                    addTarget(encoder!!.surface)
-                    build()
-                }
-
-            withContext(Dispatchers.Main) {
-                _session.setRepeatingRequest(recordRequest, null, handler)
-            }
-            _state = CameraCapture.State.ACTIVE
-        }
-    }
-
-    private fun ByteBuffer.makeCopy(): ByteBuffer {
-        val buffer =
-            if (isDirect) ByteBuffer.allocateDirect(capacity()) else ByteBuffer.allocate(capacity())
-
-        val position = position()
-        val limit = limit()
-        rewind()
-
-        buffer.put(this)
-        buffer.rewind()
-
-        position(position)
-        limit(limit)
-
-        buffer.position(position)
-        buffer.limit(limit)
-
-        return buffer
-    }
-
-    override suspend fun stop() {
-        stateLock.withLock {
-            stopCamera()
-            encoder?.apply {
-                stop()
-                outputChannel?.close()
-            }
+            encoder?.stop()
             encoder = null
-        }
+        }.await()
     }
 
-    private fun isActive() = _state == CameraCapture.State.ACTIVE
+    override suspend fun startCapture() {
+        val currentState = actionRunner.sendAction { state.value }.await()
+        if (currentState == CameraState.RELEASED) {
+            throw IllegalStateException("Camera is released")
+        }
 
-    private suspend fun stopCamera() {
-        try {
-            if (isActive()) {
-                _session.abortCaptures()
-                _session.close()
-                _sessionCloseDeferred.await()
-                _session.device.close()
-                _cameraCloseDeferred.await()
-                _state = CameraCapture.State.INACTIVE
+        actionRunner.sendAction {
+            // close the previous session if any
+            session?.close()
+
+            encoder = Encoder()
+            encoder?.start()
+
+            // if the camera is not active, open the camera
+            if (currentState == CameraState.INACTIVE) {
+                cameraDevice = openCameraDevice()
             }
-        } catch (ex: Exception) {
-            ex.printStackTrace()
-        }
+
+            cameraDevice?.let {
+                session = configSession(it)
+                session?.createCaptureRequest()
+            }
+            _state.value = CameraState.ACTIVE
+        }.await()
     }
+
+    override suspend fun stopCapture() {
+        actionRunner.sendAction {
+            if (state.value != CameraState.ACTIVE) throw IllegalStateException("Camera is not active")
+            encoder?.stop()
+            encoder = null
+            session?.close()
+            cameraDevice?.let {
+                session = configSession(it)
+                session?.createCaptureRequest()
+            }
+        }.await()
+    }
+
 
     override suspend fun release() {
-        stateLock.withLock {
-            if (isActive()) {
-                stop()
+        val isActive = actionRunner.sendAction { (state.value == CameraState.ACTIVE) }.await()
+        if (isActive) {
+            actionRunner.sendAction {
+                session?.close()
+                cameraDevice?.close()
+                _state.value = CameraState.INACTIVE
+                encoder?.stop()
+
+                _state.value = CameraState.RELEASED
+            }.await()
+        }
+        scope.cancel()
+        handlerThread.quitSafely()
+        previewImageReader.close()
+    }
+
+    @SuppressLint("MissingPermission")
+    private suspend fun openCameraDevice(): CameraDevice = suspendCancellableCoroutine { cont ->
+        val cameraId = selectedCamera.value.id
+        cameraManager.openCamera(
+            cameraId,
+            object : CameraDevice.StateCallback() {
+                override fun onOpened(camera: CameraDevice) {
+                    cont.resume(camera)
+                }
+
+                override fun onError(camera: CameraDevice, error: Int) {
+                    val msg = when (error) {
+                        ERROR_CAMERA_DEVICE -> "Fatal (device)"
+                        ERROR_CAMERA_DISABLED -> "Device policy"
+                        ERROR_CAMERA_IN_USE -> "Camera in use"
+                        ERROR_CAMERA_SERVICE -> "Fatal (service)"
+                        ERROR_MAX_CAMERAS_IN_USE -> "Maximum cameras in use"
+                        else -> "Unknown"
+                    }
+                    val exc = RuntimeException("Camera $cameraId error: ($error) $msg")
+                    cont.resumeWithException(exc)
+                    Log.e(TAG, exc.message, exc)
+                }
+
+                override fun onDisconnected(camera: CameraDevice) {
+                    Log.d(TAG, "camera device ${camera.id} got disconnected")
+                    onCameraDisconnected(camera)
+                }
+
+                override fun onClosed(camera: CameraDevice) {
+                    Log.d(TAG, "camera device ${camera.id} is now closed")
+                }
+            },
+            handler
+        )
+    }
+
+    private suspend fun configSession(cameraDevice: CameraDevice): CameraCaptureSession =
+        suspendCancellableCoroutine { cont ->
+            val outputSurface = buildList {
+                add(previewImageReader.surface)
+                encoder?.let { add(it.inputSurface) }
             }
-            releaseInstances()
-            _state = CameraCapture.State.RELEASED
+
+            cameraDevice.createCaptureSession(
+                outputSurface,
+                object : CameraCaptureSession.StateCallback() {
+                    override fun onConfigured(session: CameraCaptureSession) {
+                        cont.resume(session)
+                    }
+
+                    override fun onConfigureFailed(session: CameraCaptureSession) {
+                        cont.resumeWithException(RuntimeException("Could not configured session"))
+                    }
+
+                    override fun onClosed(session: CameraCaptureSession) {
+                        Log.d(TAG, "CameraCaptureSession is now closed")
+                    }
+                },
+                handler
+            )
+        }
+
+    private fun CameraCaptureSession.createCaptureRequest() {
+        cameraDevice?.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)?.run {
+            set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(30, 30))
+            set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, 3)
+            addTarget(previewImageReader.surface)
+            encoder?.let { addTarget(it.inputSurface) }
+            build()
+        }?.let {
+            setRepeatingRequest(it, null, handler)
         }
     }
 
-    private fun releaseInstances() {
-        try {
-            previewImageReader.close()
-            handlerThread.quitSafely()
-        } catch (ex: Exception) {
-            ex.printStackTrace()
+    private fun onCameraDisconnected(cameraDevice: CameraDevice) {
+        scope.launch {
+            actionRunner.sendAction {
+                _state.value = CameraState.INACTIVE
+                try {
+                    cameraDevice.close()
+                } catch (exc: Exception) {
+                    Log.e(TAG, exc.message, exc)
+                }
+                this@CameraCaptureImpl.cameraDevice = null
+                encoder?.stop()
+                encoder = null
+                try {
+                    session?.close()
+                } catch (exc: Exception) {
+                    Log.e(TAG, exc.message, exc)
+                }
+                session = null
+            }
         }
     }
 
-    override suspend fun selectCamera(cameraFace: CameraLensFacing) {
-        stateLock.withLock {
-            val wasActive = isActive()
-            stopCamera()
-            currentCamera = cameras.first { it.lensFacing == cameraFace }
-            if (wasActive) {
-                startCapturing()
+    override fun getCameras(): List<CameraDeviceInfo> {
+        return cameras
+    }
+
+    override suspend fun selectCamera(info: CameraDeviceInfo) {
+        actionRunner.sendAction {
+            if (state.value == CameraState.ACTIVE) {
+                session?.close()
+                cameraDevice?.close()
             }
-        }
+            _selectedCamera.value = info
+            if (state.value == CameraState.ACTIVE) {
+                cameraDevice = openCameraDevice()
+                session = configSession(cameraDevice!!)
+                session?.createCaptureRequest()
+            }
+        }.await()
     }
 
     private fun getCurrentCameraOrientation(): Int {
-        return cameraManager.getCameraCharacteristics(currentCamera.id)
+        return cameraManager.getCameraCharacteristics(selectedCamera.value.id)
             .get(CameraCharacteristics.SENSOR_ORIENTATION)!!
     }
 
-    override fun setPreviewFrameListener(listener: ((Bitmap) -> Unit)?) {
+    private fun setPreviewFrameListener(listener: ((Bitmap) -> Unit)?) {
         previewFrameListener = listener
     }
 
     /**
      * Compressed Output Channel of audio buffers
      */
-    @OptIn(DelicateCoroutinesApi::class)
-    override fun compressChannel(): Channel<Pair<ByteArray, BufferInfo>> {
-        val channel = encoder?.outputChannel
-        val createNew = channel == null || channel.isClosedForSend
-        if (createNew) {
-            encoder?.outputChannel = Channel()
-        }
-        return encoder?.outputChannel as? Channel
-            ?: throw IllegalStateException("Maybe you forgot to call start()?")
-    }
+    override fun compressChannel(): ReceiveChannel<Pair<ByteArray, BufferInfo>> =
+        encoder?.outputChannel ?: throw IllegalStateException("Encoder is not initialized")
 
     override fun getMediaFormat(): Deferred<MediaFormat> {
         return encoder?.formatDeferred
@@ -301,12 +378,13 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
 
     @Composable
     override fun PreviewView(modifier: Modifier) {
-        if (mutState.value == CameraCapture.State.ACTIVE) {
+        val cameraState by state.collectAsState()
+        if (cameraState == CameraState.ACTIVE) {
             val currentPreviewFrame = remember { mutableStateOf<ImageBitmap?>(null) }
             val relativeRotation = remember {
                 computeRelativeRotation()
             }
-
+            val currentCamera by selectedCamera.collectAsState()
             val xMirror =
                 remember { if (currentCamera.lensFacing == CameraLensFacing.FRONT) -1f else 1f }
 
@@ -332,9 +410,9 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
                     }
 
                     val dstSize = IntSize(
-                            (image.width * scale).roundToInt(),
-                            (image.height * scale).roundToInt()
-                        )
+                        (image.width * scale).roundToInt(),
+                        (image.height * scale).roundToInt()
+                    )
 
                     val imageOffset = let {
                         val x = (size.width - dstSize.width) * 0.5f
@@ -360,71 +438,6 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
         }
     }
 
-    @SuppressLint("MissingPermission")
-    private suspend fun openCamera(): CameraDevice = suspendCoroutine { cont ->
-        val cameraId = currentCamera.id
-        cameraManager.openCamera(cameraId, object : CameraDevice.StateCallback() {
-            override fun onOpened(camera: CameraDevice) {
-                _cameraCloseDeferred = CompletableDeferred()
-                cont.resume(camera)
-            }
-
-            override fun onError(camera: CameraDevice, error: Int) {
-                val msg = when (error) {
-                    ERROR_CAMERA_DEVICE -> "Fatal (device)"
-                    ERROR_CAMERA_DISABLED -> "Device policy"
-                    ERROR_CAMERA_IN_USE -> "Camera in use"
-                    ERROR_CAMERA_SERVICE -> "Fatal (service)"
-                    ERROR_MAX_CAMERAS_IN_USE -> "Maximum cameras in use"
-                    else -> "Unknown"
-                }
-                val exc = RuntimeException("Camera $cameraId error: ($error) $msg")
-                try {
-                    cont.resumeWithException(exc)
-                } catch (ex: IllegalStateException) {
-                    ex.printStackTrace()
-                }
-                Log.e(TAG, exc.message, exc)
-            }
-
-            override fun onDisconnected(camera: CameraDevice) {
-                Log.d(TAG, "camera device ${camera.id} got disconnected")
-            }
-
-            override fun onClosed(camera: CameraDevice) {
-                _cameraCloseDeferred.complete(Unit)
-                Log.d(TAG, "camera device ${camera.id} is now closed")
-            }
-        }, handler)
-    }
-
-    private suspend fun configSession(cameraDevice: CameraDevice): CameraCaptureSession =
-        suspendCancellableCoroutine { cont ->
-            val outputSurface = buildList {
-                add(previewImageReader.surface)
-                add(encoder!!.surface)
-            }
-
-            cameraDevice.createCaptureSession(
-                outputSurface,
-                object : CameraCaptureSession.StateCallback() {
-                    override fun onConfigured(session: CameraCaptureSession) {
-                        _sessionCloseDeferred = CompletableDeferred()
-                        cont.resume(session)
-                    }
-
-                    override fun onConfigureFailed(session: CameraCaptureSession) {
-                        cont.resumeWithException(RuntimeException("Could not configured session"))
-                    }
-
-                    override fun onClosed(session: CameraCaptureSession) {
-                        _sessionCloseDeferred.complete(Unit)
-                        Log.d(TAG, "CameraCaptureSession is now closed")
-                    }
-                },
-                handler
-            )
-        }
 
     private fun getSupportedSize(
         characteristics: CameraCharacteristics,
@@ -437,13 +450,30 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
         } ?: throw RuntimeException("Could not find supported size for $quality")
     }
 
+    private fun ByteBuffer.makeCopy(): ByteBuffer {
+        val buffer =
+            if (isDirect) ByteBuffer.allocateDirect(capacity()) else ByteBuffer.allocate(capacity())
+
+        val position = position()
+        val limit = limit()
+        rewind()
+
+        buffer.put(this)
+        buffer.rewind()
+
+        position(position)
+        limit(limit)
+
+        buffer.position(position)
+        buffer.limit(limit)
+
+        return buffer
+    }
 
     private inner class Encoder {
-        var outputChannel: SendChannel<Pair<ByteArray, BufferInfo>>? = null
-        lateinit var surface: Surface
-
+        lateinit var inputSurface: Surface
+        val outputChannel: Channel<Pair<ByteArray, BufferInfo>> = Channel()
         val formatDeferred = CompletableDeferred<MediaFormat>()
-
         private val scope = CoroutineScope(Dispatchers.Default)
         private lateinit var mediaCodec: MediaCodec
 
@@ -452,7 +482,7 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
             val format = createFormat()
 
             mediaCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-            surface = mediaCodec.createInputSurface()
+            inputSurface = mediaCodec.createInputSurface()
             mediaCodec.start()
 
             scope.launch {
@@ -498,7 +528,7 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
             }
 
             try {
-                outputChannel?.send(Pair(compressedArray, info))
+                outputChannel.send(Pair(compressedArray, info))
             } catch (ex: ClosedSendChannelException) {
                 // ignore
             }
@@ -514,13 +544,18 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
             }
 
             // Cancel the scope itself
+            outputChannel?.close()
             scope.cancel()
+
+            if (!formatDeferred.isCompleted) {
+                formatDeferred.completeExceptionally(IllegalStateException("encoder is stopped"))
+            }
 
             // Safely stop and release the media codec
             try {
                 mediaCodec.stop()
                 mediaCodec.release()
-                surface.release()
+                inputSurface.release()
                 Log.i(TAG, "MediaCodec stopped")
             } catch (e: Exception) {
                 Log.e(TAG, "Could not stop MediaCodec: ${e.message}")

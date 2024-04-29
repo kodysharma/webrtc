@@ -1,7 +1,7 @@
-package desidev.videocall.service.rtcclient
+package desidev.rtc.rtcclient
 
-import desidev.videocall.service.rtcmsg.RTCMessage
-import desidev.videocall.service.rtcmsg.RTCMessage.Control.Acknowledge
+import desidev.rtc.rtcmsg.RTCMessage
+import desidev.rtc.rtcmsg.RTCMessage.Control.Acknowledge
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout

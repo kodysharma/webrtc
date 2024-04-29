@@ -36,8 +36,6 @@ abstract class Actor<A>(coroutineContext: CoroutineContext){
     }
 }
 
-
-
 open class Action<R> {
     val deferred: CompletableDeferred<R> = CompletableDeferred()
     suspend fun await(): R {
@@ -52,4 +50,5 @@ open class Action<R> {
         deferred.completeExceptionally(ex)
     }
 }
+
 

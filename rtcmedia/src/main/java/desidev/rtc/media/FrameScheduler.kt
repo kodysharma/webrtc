@@ -3,10 +3,8 @@ package desidev.rtc.media
 import androidx.compose.ui.graphics.ImageBitmap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlin.coroutines.CoroutineContext
-import kotlin.time.Duration.Companion.microseconds
 
 class FrameScheduler(coroutineContext: CoroutineContext = Dispatchers.Default) :
     Actor<FrameScheduler.Action>(coroutineContext) {

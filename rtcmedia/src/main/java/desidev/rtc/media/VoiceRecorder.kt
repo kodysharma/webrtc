@@ -133,7 +133,7 @@ class VoiceRecorder private constructor(
     class Builder {
         private var sampleRate: Int = 24000
         private var channelConfig: Int = AudioFormat.CHANNEL_IN_MONO
-        private var audioSource: Int = AudioSource.CAMCORDER
+        private var audioSource: Int = AudioSource.VOICE_COMMUNICATION
         private var encoding: Int = AudioFormat.ENCODING_PCM_16BIT
         private var chunkLenInMs: Long = 15
         private var chunkSize: Int = -1

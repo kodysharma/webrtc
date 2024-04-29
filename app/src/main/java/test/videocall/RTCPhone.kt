@@ -13,14 +13,14 @@ import desidev.rtc.media.VoiceRecorder
 import desidev.rtc.media.camera.CameraCaptureImpl
 import desidev.rtc.media.player.AudioPlayer
 import desidev.rtc.media.player.VideoPlayer
+import desidev.rtc.rtcclient.RTC
+import desidev.rtc.rtcclient.TrackListener
+import desidev.rtc.rtcmsg.RTCMessage
+import desidev.rtc.rtcmsg.RTCMessage.Sample
+import desidev.rtc.rtcmsg.toMediaFormat
+import desidev.rtc.rtcmsg.toRTCFormat
 import desidev.turnclient.ICECandidate
 import desidev.utility.yuv.YuvToRgbConverter
-import desidev.videocall.service.rtcclient.RTC
-import desidev.videocall.service.rtcclient.TrackListener
-import desidev.videocall.service.rtcmsg.RTCMessage
-import desidev.videocall.service.rtcmsg.RTCMessage.Sample
-import desidev.videocall.service.rtcmsg.toMediaFormat
-import desidev.videocall.service.rtcmsg.toRTCFormat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -171,12 +171,14 @@ class RTCPhone(context: Context) : Actor<RTCPhoneAction>(Dispatchers.Default) {
 
 
     suspend fun enableCamera() {
-        cameraCapture.start()
+        cameraCapture.openCamera()
+        cameraCapture.startCapture()
         this.mutCameraStateFlow.value = true
     }
 
     suspend fun disableCamera() {
-        cameraCapture.stop()
+        cameraCapture.stopCapture()
+        cameraCapture.closeCamera()
         this.mutCameraStateFlow.value = false
     }
 

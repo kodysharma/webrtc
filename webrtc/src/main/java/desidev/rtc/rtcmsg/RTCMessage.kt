@@ -1,4 +1,4 @@
-package desidev.videocall.service.rtcmsg
+package desidev.rtc.rtcmsg
 
 import android.media.MediaFormat
 import desidev.turnclient.util.NumberSeqGenerator
@@ -8,7 +8,8 @@ import kotlin.reflect.full.createInstance
 import kotlin.reflect.full.declaredMemberProperties
 import kotlin.reflect.jvm.isAccessible
 
-val numberSeqGenerator = NumberSeqGenerator(0 .. Int.MAX_VALUE)
+val numberSeqGenerator = NumberSeqGenerator(0..Int.MAX_VALUE)
+
 @Serializable
 data class RTCMessage(
     val audioSample: Sample? = null,
@@ -22,10 +23,8 @@ data class RTCMessage(
         val streamDisable: StreamDisable? = null,
         val ack: Acknowledge? = null
     ) {
+        enum class StreamType { Audio, Video }
 
-        enum class StreamType {
-            Audio, Video
-        }
         @Serializable
         data class StreamEnable(
             val format: Format,
@@ -77,11 +76,11 @@ data class RTCMessage(
         @OptIn(ExperimentalStdlibApi::class)
         override fun toString(): String {
             val oneOfValue: Any = when {
-                integer!= null -> integer
-                string!= null -> string
-                byteBuffer!= null -> "buffer = ${byteBuffer.contentToString()}"
-                float!= null -> float
-                long!= null -> long
+                integer != null -> integer
+                string != null -> string
+                byteBuffer != null -> "buffer = ${byteBuffer.contentToString()}"
+                float != null -> float
+                long != null -> long
                 else -> throw IllegalStateException("Unexpected value: $this")
             }
             return "OneOfValue($oneOfValue)"
@@ -114,14 +113,11 @@ data class RTCMessage(
     }
 
 
-
-
-
     override fun toString(): String {
         val oneOfValue: Any = when {
-            audioSample!= null -> audioSample
-            videoSample!= null -> videoSample
-            control!= null -> control
+            audioSample != null -> audioSample
+            videoSample != null -> videoSample
+            control != null -> control
             else -> throw IllegalStateException("Unexpected value: $this")
         }
         return "RTCMessage($oneOfValue)"
@@ -170,7 +166,6 @@ fun RTCMessage.Format.toMediaFormat(): MediaFormat {
     }
     return mediaFormat
 }
-
 
 fun ByteBuffer.copyArray(): ByteArray {
     val array = ByteArray(remaining())

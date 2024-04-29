@@ -1,6 +1,22 @@
 plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.jetbrains.kotlin.android)
+
+    `maven-publish`
+}
+
+afterEvaluate {
+    publishing {
+        publications {
+            create<MavenPublication>("release") {
+                artifactId = "rtc"
+                groupId = "desidev.rtc-media"
+                version = "1.0.0"
+
+                from(components["release"])
+            }
+        }
+    }
 }
 
 android {
@@ -40,12 +56,16 @@ android {
     }
 }
 
+
+
 dependencies {
     implementation(libs.gson)
     implementation(libs.kotlin.reflect)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
     implementation(libs.material)
+
+    implementation("online.desidev:kotlinutils:1.0.0")
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.foundation)

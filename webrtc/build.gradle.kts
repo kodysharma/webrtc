@@ -1,19 +1,43 @@
-
 plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.jetbrains.kotlin.android)
     kotlin("plugin.serialization") version "1.9.22"
+    `maven-publish`
+}
+
+afterEvaluate {
+    publishing {
+        publications {
+            create<MavenPublication>("release") {
+                artifactId = "rtc"
+                groupId = "desidev.rtc"
+                version = "1.0.0"
+
+                from(components["release"])
+            }
+        }
+    }
 }
 
 android {
-    namespace = "desidev.videocall.service"
+    namespace = "desidev.rtc"
     compileSdk = 34
 
     defaultConfig {
         minSdk = 24
+        aarMetadata {
+            minCompileSdk = minSdk
+        }
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
+    }
+
+    publishing {
+        singleVariant("release") {
+            withSourcesJar()
+            withJavadocJar()
+        }
     }
 
     buildTypes {
@@ -28,39 +52,22 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_1_8
         targetCompatibility = JavaVersion.VERSION_1_8
-        isCoreLibraryDesugaringEnabled = true
+//        isCoreLibraryDesugaringEnabled = true
     }
 
     kotlinOptions {
         jvmTarget = "1.8"
     }
-
-    composeOptions {
-        val kcev = libs.versions.kotlinCompilerExtensionVersion
-        kotlinCompilerExtensionVersion = kcev.get()
-    }
-
-    buildFeatures {
-        compose = true
-    }
 }
+
 
 dependencies {
     api(project(":turnclient"))
     api(project(":rtcmedia"))
     api(project(":utility"))
+    implementation("online.desidev:kotlinutils:1.0.0")
 
     implementation(libs.kotlin.reflect)
     implementation(libs.kotlinx.serialization.protobuf)
-
-    implementation(platform(libs.androidx.compose.bom))
-    implementation(libs.androidx.compose.foundation)
-    // dependency bundle
-    implementation(libs.bundles.webrtc.dep.bundle)
-    coreLibraryDesugaring(libs.coreLibraryDesugaring)
-    testImplementation(libs.junit)
-    androidTestImplementation(libs.androidx.junit)
-    androidTestImplementation(libs.androidx.rules)
-    androidTestImplementation(libs.androidx.espresso.core)
-
+    implementation(libs.kotlinx.coroutines.core)
 }

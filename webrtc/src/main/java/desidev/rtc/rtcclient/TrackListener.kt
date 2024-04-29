@@ -1,6 +1,6 @@
-package desidev.videocall.service.rtcclient
+package desidev.rtc.rtcclient
 
-import desidev.videocall.service.rtcmsg.RTCMessage
+import desidev.rtc.rtcmsg.RTCMessage
 
 interface TrackListener {
     fun onVideoStreamAvailable(videoFormat: RTCMessage.Format)

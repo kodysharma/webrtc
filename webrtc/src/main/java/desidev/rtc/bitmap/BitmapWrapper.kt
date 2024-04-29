@@ -1,4 +1,4 @@
-package desidev.videocall.service.bitmap
+package desidev.rtc.bitmap
 
 import android.graphics.Bitmap
 

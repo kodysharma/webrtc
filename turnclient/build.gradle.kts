@@ -1,6 +1,21 @@
 plugins {
     id("java-library")
     alias(libs.plugins.jetbrains.kotlin.jvm)
+    `maven-publish`
+}
+
+afterEvaluate {
+    publishing {
+        publications {
+            create<MavenPublication>("release") {
+                artifactId = "turnclient"
+                groupId = "desidev.turnclient"
+                version = "1.0.0"
+
+                from(components["java"])
+            }
+        }
+    }
 }
 
 java {

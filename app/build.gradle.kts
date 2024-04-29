@@ -53,6 +53,8 @@ android {
 
 dependencies {
     implementation(project(":webrtc"))
+    implementation(project(":rtcmedia"))
+    implementation(project(":utility"))
 
     implementation(libs.androidx.constraintlayout.compose)
     implementation(libs.androidx.core.ktx)
@@ -63,6 +65,7 @@ dependencies {
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
+
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
@@ -75,8 +78,8 @@ dependencies {
     val ktor_version = "2.3.8"
     val logback_version = "1.2.11"
     implementation("io.ktor:ktor-client-websockets:$ktor_version")
-    implementation ("io.ktor:ktor-client-core:$ktor_version")
-    implementation ("io.ktor:ktor-client-cio:$ktor_version")
+    implementation("io.ktor:ktor-client-core:$ktor_version")
+    implementation("io.ktor:ktor-client-cio:$ktor_version")
     implementation("ch.qos.logback:logback-classic:$logback_version")
     implementation("io.ktor:ktor-client-content-negotiation:$ktor_version")
     implementation("io.ktor:ktor-serialization-gson:$ktor_version")
