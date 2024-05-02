@@ -13,25 +13,22 @@ import desidev.turnclient.TurnClient
 import desidev.turnclient.attribute.AddressValue
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.ObsoleteCoroutinesApi
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.channels.actor
-import kotlinx.coroutines.channels.consumeEach
-import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.decodeFromByteArray
 import kotlinx.serialization.encodeToByteArray
 import kotlinx.serialization.protobuf.ProtoBuf
-import online.desidev.kotlinutils.Action
-import online.desidev.kotlinutils.sendAction
+import online.desidev.kotlinutils.ReentrantMutex
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import kotlin.time.measureTime
 
-class RTC {
+class RTC : AutoCloseable {
     companion object {
         val TAG = RTC::class.simpleName
     }
@@ -45,54 +42,50 @@ class RTC {
     )
 
     private val acknowledgement = MessageAcknowledgement()
-
     private var localIce: List<ICECandidate>? = null
     private var remoteIce: List<ICECandidate>? = null
     private var dataChannel: ChannelBinding? = null
-
-    private var audioStreamJob: Job? = null
-    private var videoStreamJob: Job? = null
     private var trackListener: TrackListener? = null
 
     private var remoteVideoStreamFormat: RTCMessage.Format? = null
     private var remoteAudioStreamFormat: RTCMessage.Format? = null
 
-    @OptIn(ObsoleteCoroutinesApi::class)
-    val actor = scope.actor<Action<*>> {
-        consumeEach { action ->
-            action.execute()
+    private val conMutex = ReentrantMutex()
+    private val videoStmMutex = ReentrantMutex()
+    private val audioStmMutex = ReentrantMutex()
+
+    private var videoStmEnable: Boolean = false
+    private var audioStmEnable: Boolean = false
+
+    suspend fun createLocalIce(): List<ICECandidate> {
+        return conMutex.withLock {
+            val result = turn.createAllocation()
+            if (result.isSuccess) {
+                result.getOrThrow().also { localIce = it }
+            } else {
+                throw result.exceptionOrNull()!!
+            }
         }
     }
 
-    suspend fun createLocalIce() {
-        actor.sendAction {
-            val result = turn.createAllocation()
-            if (result.isSuccess) {
-                localIce = result.getOrThrow()
-            } else {
-                Log.e(TAG, "Failed to create allocation", result.exceptionOrNull())
-            }
-        }.await()
-    }
-
-    suspend fun addRemoteIce(iceCandidate: List<ICECandidate>) {
-        actor.sendAction {
-            remoteIce = iceCandidate
-        }.await()
+    fun addRemoteIce(iceCandidate: List<ICECandidate>) {
+        remoteIce = iceCandidate
     }
 
     suspend fun createPeerConnection() {
-        actor.sendAction {
+        conMutex.withLock {
+            if (remoteIce == null || localIce == null) {
+                throw IllegalStateException("Remote or local ICE not set")
+            }
+
             val relay = remoteIce?.find { it.type == CandidateType.RELAY }
                 ?: throw IllegalStateException("No remote relay candidate")
 
             val addressValue = AddressValue.from(
                 withContext(Dispatchers.IO) {
                     InetAddress.getByName(relay.ip)
-                },
-                relay.port
+                }, relay.port
             )
-
             val result = turn.createChannel(addressValue)
             if (result.isSuccess) {
                 dataChannel = result.getOrThrow()
@@ -100,42 +93,24 @@ class RTC {
             } else {
                 throw result.exceptionOrNull()!!
             }
-        }.await()
+        }
     }
 
     suspend fun closePeerConnection() {
-        actor.sendAction {
-            videoStreamJob?.let {
-                it.cancel()
-                videoStreamJob = null
+        withContext(NonCancellable) {
+            conMutex.withLock {
+                turn.deleteAllocation()
+                localIce = null
+                remoteIce = null
+                dataChannel = null
             }
-            audioStreamJob?.let {
-                it.cancel()
-                audioStreamJob = null
-            }
-
-            turn.deleteAllocation()
-            dataChannel = null
-        }.await()
-    }
-
-    suspend fun addVideoSource(format: RTCMessage.Format, samples: Flow<RTCMessage.Sample>) {
-        actor.sendAction {
-            addVideoStream(format, samples)
-        }.await()
-    }
-
-    suspend fun addAudioSource(format: RTCMessage.Format, samples: Flow<RTCMessage.Sample>) {
-        actor.sendAction {
-            addAudioStream(format, samples)
-        }.await()
-    }
-
-
-    suspend fun clearRemoteIce() {
-        actor.sendAction {
-            remoteIce = null
         }
+    }
+
+    suspend fun isPeerConnectionExist(): Boolean = conMutex.withLock { dataChannel != null }
+
+    fun clearRemoteIce() {
+        remoteIce = null
     }
 
     fun setTrackListener(trackListener: TrackListener) {
@@ -144,6 +119,80 @@ class RTC {
 
     fun getLocalIce(): List<ICECandidate> =
         localIce ?: throw IllegalStateException("Local ICE not created")
+
+
+    suspend fun enableVideoStream(format: RTCMessage.Format) {
+        videoStmMutex.withLock {
+            if (!isPeerConnectionExist()) {
+                throw IllegalStateException("Peer connection is closed!")
+            }
+            sendControlMessage(
+                RTCMessage.Control(
+                    streamEnable = StreamEnable(format, StreamType.Video)
+                )
+            )
+            videoStmEnable = true
+        }
+    }
+
+    suspend fun disableVideoStream() {
+        videoStmMutex.withLock {
+            if (isPeerConnectionExist()) {
+                throw IllegalStateException("Peer connection is closed!")
+            }
+            sendControlMessage(
+                RTCMessage.Control(streamDisable = StreamDisable(StreamType.Video))
+            )
+            videoStmEnable = false
+        }
+    }
+
+    suspend fun sendVideoSample(sample: RTCMessage.Sample) {
+        videoStmMutex.withLock {
+            if (videoStmEnable) {
+                sendMessage(RTCMessage(videoSample = sample))
+            }
+        }
+    }
+
+    suspend fun enableAudioStream(format: RTCMessage.Format) {
+        audioStmMutex.withLock {
+            if (!isPeerConnectionExist()) {
+                throw IllegalStateException("Peer connection is closed!")
+            }
+
+            sendControlMessage(
+                RTCMessage.Control(
+                    streamEnable = StreamEnable(format, StreamType.Audio)
+                )
+            )
+            audioStmEnable = true
+        }
+    }
+
+
+    suspend fun disableAudioStream() {
+        audioStmMutex.withLock {
+            val peerConnectionExist = conMutex.withLock { dataChannel != null }
+            if (!peerConnectionExist) {
+                throw IllegalStateException("Peer connection is closed!")
+            }
+            sendControlMessage(
+                RTCMessage.Control(
+                    streamDisable = StreamDisable(StreamType.Audio)
+                )
+            )
+            audioStmEnable = false
+        }
+    }
+
+    suspend fun sendAudioSample(sample: RTCMessage.Sample) {
+        audioStmMutex.withLock {
+            if (audioStmEnable) {
+                sendMessage(RTCMessage(audioSample = sample))
+            }
+        }
+    }
 
 
     @OptIn(ExperimentalSerializationApi::class)
@@ -156,126 +205,75 @@ class RTC {
                 return@receiveMessage
             }
 
+            Log.d(TAG, "Received RTCMessage: $rtcMessage")
+
             when {
                 rtcMessage.control != null -> {
-                    Log.d(TAG, "Received RTCMessage: $rtcMessage")
-
                     val control = rtcMessage.control
-                    if (control.streamEnable != null) {
-                        val streamEnable = control.streamEnable
-                        scope.launch {
-                            actor.sendAction {
-                                if (streamEnable.type == StreamType.Video) {
-                                    if (remoteVideoStreamFormat == null) {
-                                        trackListener?.onVideoStreamAvailable(streamEnable.format)
-                                        remoteVideoStreamFormat = streamEnable.format
-                                    }
-                                } else if (streamEnable.type == StreamType.Audio) {
-                                    if (remoteAudioStreamFormat == null) {
-                                        trackListener?.onAudioStreamAvailable(streamEnable.format)
-                                        remoteAudioStreamFormat = streamEnable.format
-                                    }
+                    scope.launch { sendAck(control.txId) }
+
+                    when {
+                        control.streamEnable != null -> {
+                            val streamEnable = control.streamEnable
+                            if (streamEnable.type == StreamType.Video) {
+                                if (remoteVideoStreamFormat == null) {
+                                    trackListener?.onVideoStreamAvailable(streamEnable.format)
+                                    remoteVideoStreamFormat = streamEnable.format
+                                }
+                            } else if (streamEnable.type == StreamType.Audio) {
+                                if (remoteAudioStreamFormat == null) {
+                                    trackListener?.onAudioStreamAvailable(streamEnable.format)
+                                    remoteAudioStreamFormat = streamEnable.format
                                 }
                             }
-                            sendAck(control.txId)
                         }
-                    }
 
-                    if (control.streamDisable != null) {
-                        val streamDisable = control.streamDisable
-                        scope.launch {
-                            actor.sendAction<Unit> {
-                                val type = streamDisable.streamType
-                                if (type == StreamType.Video) {
-                                    remoteVideoStreamFormat = null
-                                    trackListener?.onVideoStreamDisable()
-                                } else if (type == StreamType.Audio) {
-                                    remoteAudioStreamFormat = null
-                                    trackListener?.onAudioStreamDisable()
-                                }
+                        control.streamDisable != null -> {
+                            val streamDisable = control.streamDisable
+                            val type = streamDisable.streamType
+                            if (type == StreamType.Video) {
+                                remoteVideoStreamFormat = null
+                                trackListener?.onVideoStreamDisable()
+                            } else if (type == StreamType.Audio) {
+                                remoteAudioStreamFormat = null
+                                trackListener?.onAudioStreamDisable()
                             }
-                            sendAck(control.txId)
                         }
                     }
+                }
 
-                    if (control.ack != null) {
-                        val ack = control.ack
-                        acknowledgement.acknowledge(ack)
-                    }
+                rtcMessage.acknowledge != null -> {
+                    acknowledgement.acknowledge(rtcMessage.acknowledge)
                 }
 
                 rtcMessage.audioSample != null -> {
-                    scope.launch {
-                        actor.sendAction {
-                            trackListener?.onNextAudioSample(rtcMessage.audioSample)
-                        }
-                    }
+                    trackListener?.onNextAudioSample(rtcMessage.audioSample)
                 }
 
                 rtcMessage.videoSample != null -> {
-                    scope.launch {
-                        actor.sendAction {
-                            trackListener?.onNextVideoSample(rtcMessage.videoSample)
-                        }
-                    }
+                    trackListener?.onNextVideoSample(rtcMessage.videoSample)
                 }
             }
-        }
-    }
-
-    private fun addVideoStream(format: RTCMessage.Format, samples: Flow<RTCMessage.Sample>) {
-        videoStreamJob = scope.launch {
-            sendControlMessage(
-                RTCMessage.Control(
-                    streamEnable = StreamEnable(format, StreamType.Video)
-                )
-            )
-
-            samples.collect { sample: RTCMessage.Sample ->
-                sendMessage(RTCMessage(videoSample = sample))
-            }
-
-            Log.i(TAG, "Video Stream Disabled")
-            sendControlMessage(RTCMessage.Control(streamDisable = StreamDisable(StreamType.Video)))
-        }
-    }
-
-    private fun addAudioStream(format: RTCMessage.Format, samples: Flow<RTCMessage.Sample>) {
-        audioStreamJob = scope.launch {
-            sendControlMessage(
-                RTCMessage.Control(
-                    streamEnable = StreamEnable(format, StreamType.Audio)
-                )
-            )
-
-            samples.collect { sample ->
-                sendMessage(RTCMessage(audioSample = sample))
-            }
-
-            sendControlMessage(
-                RTCMessage.Control(
-                    streamDisable = StreamDisable(StreamType.Audio)
-                )
-            )
         }
     }
 
 
     @OptIn(ExperimentalSerializationApi::class)
     private suspend fun sendControlMessage(control: RTCMessage.Control) {
-        val message = RTCMessage(control = control)
-        val bytes = ProtoBuf.encodeToByteArray(message)
+        withContext(Dispatchers.IO) {
+            val message = RTCMessage(control = control)
+            val bytes = ProtoBuf.encodeToByteArray(message)
 
-        val timeToSend = measureTime {
-            do {
-                dataChannel?.sendMessage(bytes)
-            } while (!acknowledgement.isAck(message.control!!))
+            val timeToSend = measureTime {
+                do {
+                    dataChannel?.sendMessage(bytes)
+                } while (!acknowledgement.isAck(message.control!!))
+            }
+            Log.d(
+                TAG,
+                "Sent control message in ${timeToSend.inWholeMilliseconds} ms, message = $message"
+            )
         }
-
-        Log.d(
-            TAG,
-            "Sent control message in ${timeToSend.inWholeMilliseconds} ms, message = $message"
-        )
     }
 
     @OptIn(ExperimentalSerializationApi::class)
@@ -285,16 +283,29 @@ class RTC {
     }
 
     @OptIn(ExperimentalSerializationApi::class)
-    private fun sendAck(txId: Int) {
-        val ackMsg = RTCMessage(
-            control = RTCMessage.Control(
-                txId = txId,
-                ack = Acknowledge(txId)
-            )
-        ).let {
-            ProtoBuf.encodeToByteArray(it)
+    private suspend fun sendAck(txId: Int) {
+        withContext(Dispatchers.IO) {
+            val ackMsg = RTCMessage(acknowledge = Acknowledge(txId = txId)).let {
+                ProtoBuf.encodeToByteArray(it)
+            }
+            dataChannel?.sendMessage(ackMsg)
         }
+    }
 
-        dataChannel?.sendMessage(ackMsg)
+    override fun close() {
+        scope.coroutineContext.cancelChildren()
+        scope.launch {
+            withContext(NonCancellable) {
+                if (isPeerConnectionExist()) {
+                    try {
+                        trackListener = null
+                        closePeerConnection()
+                    } catch (ex: Exception) {
+                        Log.e(TAG, "Failed to close peer connection, ${ex.message}")
+                    }
+                }
+            }
+        }
+        scope.cancel()
     }
 }

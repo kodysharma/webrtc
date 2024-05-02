@@ -15,13 +15,13 @@ data class RTCMessage(
     val audioSample: Sample? = null,
     val videoSample: Sample? = null,
     val control: Control? = null,
+    val acknowledge: Control.Acknowledge? = null
 ) {
     @Serializable
     data class Control(
         val txId: Int = numberSeqGenerator.next(),
         val streamEnable: StreamEnable? = null,
         val streamDisable: StreamDisable? = null,
-        val ack: Acknowledge? = null
     ) {
         enum class StreamType { Audio, Video }
 

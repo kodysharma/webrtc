@@ -1,29 +1,16 @@
 package test.videocall
 
-import android.view.animation.AlphaAnimation
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.channels.SendChannel
-import kotlinx.coroutines.channels.actor
 import kotlinx.coroutines.channels.awaitClose
-import kotlinx.coroutines.channels.consumeEach
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.flatMapConcat
-import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.flow.flowOf
-import kotlinx.coroutines.flow.flowOn
-import kotlinx.coroutines.flow.shareIn
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.job
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.junit.Test
-
+import kotlin.contracts.ExperimentalContracts
+import kotlin.contracts.InvocationKind
+import kotlin.contracts.contract
 
 
 class ExampleUnitTest {
@@ -31,17 +18,32 @@ class ExampleUnitTest {
         awaitClose { println("scope cancel") }
     }
 
+    val mutex = Mutex()
+
+
+
+    private suspend fun method1() {
+        mutex.synchronized {
+            println("method1")
+            method2()
+        }
+    }
+
+    private suspend fun method2() {
+        mutex.synchronized {
+            println("method2")
+        }
+    }
+
     @Test
     fun simpleTest() {
-        val scope = CoroutineScope(Dispatchers.Default)
         runBlocking {
-            scope.launch {
-                flow.collect()
-            }.apply {
-                delay(100)
-                scope.cancel()
+            mutex.withLock(currentCoroutineContext().job) {
+                val locks = mutex.holdsLock(currentCoroutineContext().job)
+                println(locks)
             }
         }
     }
+
 }
 

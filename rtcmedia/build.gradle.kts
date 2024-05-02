@@ -1,7 +1,6 @@
 plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.jetbrains.kotlin.android)
-
     `maven-publish`
 }
 
@@ -9,10 +8,9 @@ afterEvaluate {
     publishing {
         publications {
             create<MavenPublication>("release") {
-                artifactId = "rtc"
-                groupId = "desidev.rtc-media"
-                version = "1.0.0"
-
+                artifactId = "webrtc-media"
+                groupId = "online.desidev"
+                version = "1.0.2"
                 from(components["release"])
             }
         }

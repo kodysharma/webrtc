@@ -1,6 +1,5 @@
 package desidev.rtc.media.player
 
-import android.graphics.Bitmap
 import android.graphics.ImageFormat
 import android.media.ImageReader
 import android.media.MediaCodec
@@ -10,19 +9,18 @@ import android.media.MediaFormat
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
+import android.util.Size
 import androidx.compose.foundation.Canvas
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
-import desidev.rtc.media.FrameScheduler
+import desidev.rtc.media.bitmappool.BitmapPool
 import desidev.utility.yuv.YuvToRgbConverter
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -35,14 +33,12 @@ import kotlinx.coroutines.channels.actor
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.channels.consumeEach
 import kotlinx.coroutines.channels.trySendBlocking
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.job
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -71,14 +67,11 @@ class VideoPlayer(
         ImageFormat.YUV_420_888,
         2
     )
-
-    private val decoderOutputSurface = imageReader.surface
-
     private lateinit var videoDecoder: MediaCodec
-
     private val inputChannel = Channel<Pair<ByteArray, BufferInfo>>(Channel.BUFFERED)
 
     @OptIn(ObsoleteCoroutinesApi::class)
+
     private val processInputActor = scope.actor {
         consumeEach { index ->
             try {
@@ -115,24 +108,27 @@ class VideoPlayer(
             }
         }
 
-    private val mutFrameFlow = MutableSharedFlow<Pair<ImageBitmap, Long>>()
-    val framesFlow: SharedFlow<Pair<ImageBitmap, Long>> = mutFrameFlow.asSharedFlow()
+    private val bitmapPool = BitmapPool(
+        dimen = Size(imageReader.width, imageReader.height),
+        debug = true,
+        tag = "$TAG: bitmapPool"
+    )
+    private val currentFrame = MutableStateFlow(bitmapPool.getBitmap())
+    private val currentTimestampUs = MutableStateFlow(System.nanoTime())
 
     init {
         imageReader.setOnImageAvailableListener({ imReader ->
             imReader.acquireNextImage()?.let { image ->
-                if (mutFrameFlow.subscriptionCount.value > 0) {
-                    val frame =
-                        Bitmap.createBitmap(image.width, image.height, Bitmap.Config.ARGB_8888)
-                    yuvToRgbConverter.yuvToRgb(image, frame)
-                    val pair = Pair(frame.asImageBitmap(), image.timestamp)
-                    scope.launch { mutFrameFlow.emit(pair) }
+                if (currentFrame.subscriptionCount.value > 0) {
+                    val frame = bitmapPool.getBitmap()
+                    yuvToRgbConverter.yuvToRgb(image, frame.bitmap)
+                    currentFrame.getAndUpdate { frame }.release()
+                    currentTimestampUs.value = image.timestamp / 1000
                 }
                 image.close()
             }
         }, handler)
     }
-
 
     fun play() {
         scope.launch {
@@ -159,12 +155,11 @@ class VideoPlayer(
                     }
 
                     override fun onError(codec: MediaCodec, e: MediaCodec.CodecException) {
-                        // Todo: Handle error
                         Log.e(TAG, "onError: $e")
 
                         codec.reset()
                         codec.setCallback(this)
-                        codec.configure(format, decoderOutputSurface, null, 0)
+                        codec.configure(format, imageReader.surface, null, 0)
                         codec.start()
                     }
 
@@ -173,7 +168,7 @@ class VideoPlayer(
                     }
                 }, handler)
 
-                videoDecoder.configure(format, decoderOutputSurface, null, 0)
+                videoDecoder.configure(format, imageReader.surface, null, 0)
                 videoDecoder.start()
                 awaitClose()
             }
@@ -194,7 +189,6 @@ class VideoPlayer(
             }
         }
     }
-
 
     suspend fun stop() {
         try {
@@ -229,11 +223,8 @@ class VideoPlayer(
         }
     }
 
-
     @Composable
     fun VideoPlayerView(modifier: Modifier = Modifier) {
-        val frameScheduler = remember { FrameScheduler() }
-        val currentFrame = frameScheduler.currentFrame.collectAsState(initial = null)
         val rotation = remember {
             try {
                 format.getInteger(MediaFormat.KEY_ROTATION)
@@ -242,48 +233,38 @@ class VideoPlayer(
             }
         }
 
-        LaunchedEffect(key1 = frameScheduler) {
-            withContext(Dispatchers.Default) {
-                framesFlow.collect {
-                    val (bitmap, timestampUs) = it
-                    frameScheduler.send(FrameScheduler.Action(bitmap, timestampUs))
+        val image = currentFrame.collectAsState().value.bitmap.asImageBitmap()
+        Canvas(modifier = modifier) {
+            val scale: Float = let {
+                val imageDimen = if (rotation % 90 == 0) {
+                    with(image) { IntSize(height, width) }
+                } else {
+                    with(image) { IntSize(width, height) }
                 }
+
+                val hScale = size.height / imageDimen.height
+                val wScale = size.width / imageDimen.width
+                max(wScale, hScale)
             }
-        }
 
-        currentFrame.value?.let { image ->
-            Canvas(modifier = modifier) {
-                val scale: Float = let {
-                    val imageDimen = if (rotation % 90 == 0) {
-                        with(image) { IntSize(height, width) }
-                    } else {
-                        with(image) { IntSize(width, height) }
-                    }
+            val dstSize =
+                IntSize(image.width * scale.roundToInt(), image.height * scale.roundToInt())
 
-                    val hScale = size.height / imageDimen.height
-                    val wScale = size.width / imageDimen.width
-                    max(wScale, hScale)
-                }
+            val imageOffset = let {
+                val x = (size.width - dstSize.width) * 0.5f
+                val y = (size.height - dstSize.height) * 0.5f
+                IntOffset(x.toInt(), y.toInt())
+            }
 
-                val dstSize =
-                    IntSize(image.width * scale.roundToInt(), image.height * scale.roundToInt())
-
-                val imageOffset = let {
-                    val x = (size.width - dstSize.width) * 0.5f
-                    val y = (size.height - dstSize.height) * 0.5f
-                    IntOffset(x.toInt(), y.toInt())
-                }
-
-                clipRect {
-                    rotate(rotation.toFloat(), center) {
-                        drawImage(
-                            image = image,
-                            srcOffset = IntOffset.Zero,
-                            srcSize = IntSize(image.width, image.height),
-                            dstOffset = imageOffset,
-                            dstSize = dstSize
-                        )
-                    }
+            clipRect {
+                rotate(rotation.toFloat(), center) {
+                    drawImage(
+                        image = image,
+                        srcOffset = IntOffset.Zero,
+                        srcSize = IntSize(image.width, image.height),
+                        dstOffset = imageOffset,
+                        dstSize = dstSize
+                    )
                 }
             }
         }

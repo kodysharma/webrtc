@@ -25,6 +25,7 @@ java {
 
 
 dependencies {
+    implementation(libs.kotlinutils)
     implementation(libs.kotlin.stdlib)
     implementation(libs.kotlinx.coroutines.core)
     testImplementation(libs.kotlin.test)

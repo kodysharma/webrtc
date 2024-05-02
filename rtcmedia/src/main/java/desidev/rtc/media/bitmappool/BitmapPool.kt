@@ -1,7 +1,8 @@
-package desidev.rtc.bitmap
+package desidev.rtc.media.bitmappool
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.util.Log
 import android.util.Size
 import java.util.concurrent.ConcurrentLinkedQueue
 
@@ -9,7 +10,9 @@ class BitmapPool(
     val dimen: Size,                                                    // Dimension of the bitmaps inside the pool
     val config: Bitmap.Config = Bitmap.Config.ARGB_8888,                // Bitmap configuration
     private val capacity: Int = 10,                                     // Maximum number of bitmaps in the pool
-    initialSize: Int = 4
+    initialSize: Int = 4,
+    val tag: String = "BitmapPool",                                        // Tag for logging
+    val debug: Boolean = false                                            // Enable debug logging
 ) {
     private val pool = ConcurrentLinkedQueue<Bitmap>()
 
@@ -24,11 +27,11 @@ class BitmapPool(
      */
     fun getBitmap(): BitmapWrapper {
         return (pool.poll() ?: Bitmap.createBitmap(
-            dimen.width,
-            dimen.height,
-            config
+            dimen.width, dimen.height, config
         )).let {
-            newBitmap()
+            newBitmap().also {
+                if (debug) Log.d(tag, "getBitmap: Bitmap pool size: ${pool.size}")
+            }
         }
     }
 
@@ -43,8 +46,9 @@ class BitmapPool(
 
 
     private fun newBitmap(): BitmapWrapper = object : BitmapWrapper {
-        override val bitmap: Bitmap =
-            Bitmap.createBitmap(dimen.width, dimen.height, config)
+        override val bitmap: Bitmap = Bitmap.createBitmap(dimen.width, dimen.height, config).also {
+            if (debug) Log.i(tag, "newBitmap: Bitmap pool size: ${pool.size}")
+        }
 
         override fun release() {
             returnToPool(bitmap)
@@ -60,10 +64,15 @@ class BitmapPool(
         }
 
         if (pool.size >= capacity) {
-            println("bitmap dropped from pool")
             bitmap.recycle()
             return
         }
+
         pool.add(bitmap)
+        if (debug) Log.d(tag, "returnToPool:  pool size: ${pool.size}")
+    }
+
+    fun clear() {
+        pool.clear()
     }
 }

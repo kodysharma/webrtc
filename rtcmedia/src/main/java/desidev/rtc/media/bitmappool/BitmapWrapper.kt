@@ -1,4 +1,4 @@
-package desidev.rtc.bitmap
+package desidev.rtc.media.bitmappool
 
 import android.graphics.Bitmap
 

@@ -12,10 +12,16 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+import online.desidev.kotlinutils.ReentrantMutex
 import java.io.IOException
 import java.net.DatagramPacket
 import java.net.DatagramSocket
@@ -36,7 +42,8 @@ class TurnClient(
     private val username: String,
     private val password: String
 ) {
-    private val scope = CoroutineScope(Dispatchers.Unconfined)
+    private val scope = CoroutineScope(Dispatchers.Unconfined + SupervisorJob())
+    private val mutex = ReentrantMutex()
     private var allocation: Allocation? = null
     private val bindingChannels = mutableSetOf<ChannelBinding>()
 
@@ -53,13 +60,6 @@ class TurnClient(
         setUsername(username)
         setPassword(password)
     }
-
-    private val allocateRefreshRequestBuilder = StunRequestBuilder().apply {
-        setMessageType(MessageType.ALLOCATE_REFRESH_REQUEST)
-        setUsername(username)
-        setPassword(password)
-    }
-
     private val bindingRequestBuilder = StunRequestBuilder().apply {
         setMessageType(MessageType.CHANNEL_BIND_REQ)
         setUsername(username)
@@ -72,193 +72,212 @@ class TurnClient(
         setPassword(password)
     }
 
+    /**
+     * this call is non cancellable
+     */
     suspend fun createAllocation(): Result<List<ICECandidate>> {
-        return try {
-            if (allocation != null) {
-                throw IllegalStateException("Allocation already exists")
-            }
-            socketHandler = socketHandler ?: SocketHandler().apply { start() }
+        if (allocation != null) {
+            return Result.success(allocation!!.iceCandidates)
+        }
+        return mutex.withLock {
+            withContext(NonCancellable) {
+                try {
+                    socketHandler = socketHandler ?: SocketHandler().apply { start() }
+                    val allocateRequest =
+                        allocateRequestBuilder.setNonce(nonce).setRealm(realm).build()
+                    val response = socketHandler!!.sendMessage(allocateRequest)
+                    if (response.msgClass == MessageClass.SUCCESS_RESPONSE) {
+                        allocation = parseAllocationResult(response)
+                        Result.success(allocation!!.iceCandidates)
+                            .also { refreshJob = startRefreshJob() }
+                    } else {
+                        val errorAttr =
+                            response.attributes.find { it.type == AttributeType.ERROR_CODE.type }
+                        if (errorAttr != null) {
+                            val errorValue = errorAttr.getAsErrorValue()
+                            when (errorValue.code) {
+                                // Unauthorized
+                                401 -> {
+                                    if (realm != null) {
+                                        throw IOException("Invalid username or password.")
+                                    }
 
-            val allocateRequest = allocateRequestBuilder.setNonce(nonce).setRealm(realm).build()
-            val response = socketHandler!!.sendMessage(allocateRequest)
+                                    realm =
+                                        response.attributes.find { it.type == AttributeType.REALM.type }
+                                            ?.getValueAsString()
+                                    nonce =
+                                        response.attributes.find { it.type == AttributeType.NONCE.type }
+                                            ?.getValueAsString()
+                                    // retry
+                                    createAllocation()
+                                }
+                                // Stale nonce
+                                438 -> {
+                                    nonce =
+                                        response.attributes.find { it.type == AttributeType.NONCE.type }
+                                            ?.getValueAsString()
+                                    // retry
+                                    createAllocation()
+                                }
 
-            if (response.msgClass == MessageClass.SUCCESS_RESPONSE) {
-                Result.success(parseAllocationResult(response))
-                    .also { refreshJob = startRefreshJob() }
-            } else {
-                val errorAttr =
-                    response.attributes.find { it.type == AttributeType.ERROR_CODE.type }
-
-                if (errorAttr != null) {
-                    val errorValue = errorAttr.getAsErrorValue()
-                    when (errorValue.code) {
-                        // Unauthorized
-                        401 -> {
-                            if (realm != null) {
-                                throw IOException("Invalid username or password.")
+                                else -> {
+                                    throw IOException("Allocation failed with error: $errorValue")
+                                }
                             }
-
-                            realm = response.attributes.find { it.type == AttributeType.REALM.type }
-                                ?.getValueAsString()
-                            nonce = response.attributes.find { it.type == AttributeType.NONCE.type }
-                                ?.getValueAsString()
-                            // retry
-                            createAllocation()
-                        }
-                        // Stale nonce
-                        438 -> {
-                            nonce = response.attributes.find { it.type == AttributeType.NONCE.type }
-                                ?.getValueAsString()
-                            // retry
-                            createAllocation()
-                        }
-
-                        else -> {
-                            throw IOException("Allocation failed with error: $errorValue")
+                        } else {
+                            throw IOException("Allocation failed with Unknown error")
                         }
                     }
-                } else {
-                    throw IOException("Allocation failed with Unknown error")
+                } catch (ex: Exception) {
+                    Result.failure(ex)
                 }
             }
-        } catch (ex: Exception) {
-            Result.failure(ex)
         }
     }
 
-    suspend fun createChannel(peerAddress: AddressValue): Result<ChannelBinding> {
-        if (allocation == null) {
-            throw IllegalStateException("Cannot add peer address before creating an allocation. Please create an allocation first.")
-        }
-        val channelNumber = numberSeqGenerator.next()
-        val channelBind = bindingRequestBuilder
-            .setChannelNumber(channelNumber)
-            .setPeerAddress(peerAddress)
-            .setNonce(nonce)
-            .setRealm(realm)
-            .build()
+    suspend fun createChannel(peerAddress: AddressValue): Result<ChannelBinding> =
+        withContext(NonCancellable) {
+            mutex.withLock {
+                try {
+                    if (allocation == null) {
+                        throw IllegalStateException("Cannot add peer address before creating an allocation. Please create an allocation first.")
+                    }
 
-        val response: Message = try {
-            socketHandler!!.sendMessage(channelBind)
-        } catch (ex: Exception) {
-            return Result.failure(ex)
-        }
+                    val channelNumber = numberSeqGenerator.next()
+                    val channelBind = bindingRequestBuilder
+                        .setChannelNumber(channelNumber)
+                        .setPeerAddress(peerAddress)
+                        .setNonce(nonce)
+                        .setRealm(realm)
+                        .build()
 
-        return try {
-            when (response.msgClass) {
-                MessageClass.SUCCESS_RESPONSE -> {
-                    bindingChannels.add(ChannelBindingImpl(peerAddress, channelNumber))
-                    Result.success(ChannelBindingImpl(peerAddress, channelNumber))
-                }
+                    val response = socketHandler!!.sendMessage(channelBind)
 
-                MessageClass.ERROR_RESPONSE -> {
-                    val errorCode =
-                        response.attributes.find { it.type == AttributeType.ERROR_CODE.type }
-                            ?.getAsErrorValue()
-                            ?: throw RuntimeException("Error code not found in response")
-
-                    when (errorCode.code) {
-                        // stale nonce
-                        438 -> {
-                            nonce = response.attributes.find { it.type == AttributeType.NONCE.type }
-                                ?.getValueAsString()
-                            // retry
-                            createChannel(peerAddress)
-                        }
-
-                        // channel number is already bind to this peer
-                        400 -> {
+                    when (response.msgClass) {
+                        MessageClass.SUCCESS_RESPONSE -> {
+                            bindingChannels.add(ChannelBindingImpl(peerAddress, channelNumber))
                             Result.success(ChannelBindingImpl(peerAddress, channelNumber))
                         }
 
+                        MessageClass.ERROR_RESPONSE -> {
+                            val errorCode =
+                                response.attributes.find { it.type == AttributeType.ERROR_CODE.type }
+                                    ?.getAsErrorValue()
+                                    ?: throw RuntimeException("Error code not found in response")
+
+                            when (errorCode.code) {
+                                // stale nonce
+                                438 -> {
+                                    nonce =
+                                        response.attributes.find { it.type == AttributeType.NONCE.type }
+                                            ?.getValueAsString()
+                                    // retry
+                                    createChannel(peerAddress)
+                                }
+
+                                // channel number is already bind to this peer
+                                400 -> {
+                                    Result.success(ChannelBindingImpl(peerAddress, channelNumber))
+                                }
+
+                                else -> {
+                                    throw IOException("Channel bind request failed with error code: $errorCode")
+                                }
+                            }
+                        }
+
                         else -> {
-                            throw IOException("Channel bind request failed with error code: $errorCode")
+                            throw IOException("Unknown error")
                         }
                     }
-                }
 
-                else -> {
-                    throw IOException("Unknown error")
+                } catch (ex: Exception) {
+                    Result.failure(ex)
                 }
             }
-
-        } catch (ex: Exception) {
-            if (ex is CancellationException) throw ex
-            Result.failure(ex)
         }
-    }
 
     private suspend fun refreshChannelBinding(channelBinding: ChannelBinding) {
-        val request = this.bindingRequestBuilder
-            .setChannelNumber(channelBinding.channelNumber)
-            .setPeerAddress(channelBinding.peerAddress)
-            .setNonce(nonce)
-            .setRealm(realm)
-            .build()
-
-        socketHandler!!.sendMessage(request)
+        mutex.withLock {
+            if (allocation != null) {
+                withContext(NonCancellable) {
+                    val request = bindingRequestBuilder
+                        .setChannelNumber(channelBinding.channelNumber)
+                        .setPeerAddress(channelBinding.peerAddress)
+                        .setNonce(nonce)
+                        .setRealm(realm)
+                        .build()
+                    socketHandler!!.sendMessage(request)
+                }
+            }
+        }
     }
 
     // this refreshes the allocation
     private suspend fun refresh(lifetime: Duration) {
         check(lifetime.inWholeSeconds >= 0) { "Lifetime should be eq/greater than 0" }
-        if (allocation == null) throw IllegalStateException("Allocation is not created yet")
+        withContext(NonCancellable) {
+            mutex.withLock {
+                if (allocation != null) {
+                    val refreshRequest = refreshRequestBuilder.apply {
+                        setLifetime(lifetime.inWholeSeconds.toInt())
+                        setRealm(realm!!)
+                        setNonce(nonce!!)
+                    }.build()
+                    val response = socketHandler!!.sendMessage(refreshRequest)
+                    when (response.msgClass) {
+                        MessageClass.SUCCESS_RESPONSE -> {
+                            val lifetimeAttr =
+                                response.attributes.find { it.type == AttributeType.LIFETIME.type }
+                                    ?.getValueAsInt()
+                                    ?: throw RuntimeException("Lifetime not found in response")
 
-        val refreshRequest = refreshRequestBuilder.apply {
-            setLifetime(lifetime.inWholeSeconds.toInt())
-            setRealm(realm!!)
-            setNonce(nonce!!)
-        }.build()
+                            allocation = allocation?.copy(
+                                lifetime = lifetimeAttr.seconds,
+                                timestamp = System.currentTimeMillis()
+                            )
+                        }
 
-        val response = socketHandler!!.sendMessage(refreshRequest)
+                        MessageClass.ERROR_RESPONSE -> {
+                            val errorValue =
+                                response.attributes.find { it.type == AttributeType.ERROR_CODE.type }
+                                    ?.getAsErrorValue()
+                                    ?: throw RuntimeException("Error code not found in response")
 
-        when (response.msgClass) {
-            MessageClass.SUCCESS_RESPONSE -> {
-                val lifetimeAttr =
-                    response.attributes.find { it.type == AttributeType.LIFETIME.type }
-                        ?.getValueAsInt()
-                        ?: throw RuntimeException("Lifetime not found in response")
+                            when (errorValue.code) {
+                                // stale nonce
+                                438 -> {
+                                    nonce =
+                                        response.attributes.find { it.type == AttributeType.NONCE.type }
+                                            ?.getValueAsString()
+                                    refresh(lifetime)
+                                }
 
-                allocation = allocation?.copy(
-                    lifetime = lifetimeAttr.seconds,
-                    timestamp = System.currentTimeMillis()
-                )
-            }
+                                else -> {
+                                    throw IOException("Refresh failed with error code: $errorValue")
+                                }
+                            }
+                        }
 
-            MessageClass.ERROR_RESPONSE -> {
-                val errorValue =
-                    response.attributes.find { it.type == AttributeType.ERROR_CODE.type }
-                        ?.getAsErrorValue()
-                        ?: throw RuntimeException("Error code not found in response")
-
-                when (errorValue.code) {
-                    // stale nonce
-                    438 -> {
-                        nonce = response.attributes.find { it.type == AttributeType.NONCE.type }
-                            ?.getValueAsString()
-                        refresh(lifetime)
-                    }
-
-                    else -> {
-                        throw IOException("Refresh failed with error code: $errorValue")
+                        else -> throw IOException("Unknown error")
                     }
                 }
             }
-
-            else -> throw IOException("Unknown error")
         }
     }
 
     suspend fun deleteAllocation() {
-        refreshJob?.cancel()
-        refreshJob = null
-        refresh(0.seconds)
-        allocation = null
-        socketHandler?.cancel()
-        socketHandler = null
+        mutex.withLock {
+            refreshJob?.cancel()
+            refreshJob = null
+            refresh(0.seconds)
+            allocation = null
+            socketHandler?.cancel()
+            socketHandler = null
+        }
     }
 
-    private fun startRefreshJob() = scope.launch {
+    private fun startRefreshJob() = scope.launch(Dispatchers.IO) {
         // start a job to refresh the allocation
         launch {
             while (isActive) {
@@ -300,7 +319,6 @@ class TurnClient(
             }
         }
     }
-
 
     inner class ChannelBindingImpl(
         override val peerAddress: AddressValue,
@@ -348,7 +366,7 @@ class TurnClient(
         }
     }
 
-    private fun parseAllocationResult(response: Message): List<ICECandidate> {
+    private fun parseAllocationResult(response: Message): Allocation {
         val attrs = response.attributes
 
         val relayedAddr =
@@ -383,10 +401,7 @@ class TurnClient(
             )
 
         )
-        allocation = Allocation(
-            System.currentTimeMillis(), lifetime.seconds, candidates
-        )
-        return candidates
+        return Allocation(System.currentTimeMillis(), lifetime.seconds, candidates)
     }
 
     private abstract class ResponseCallback {
@@ -414,6 +429,10 @@ class TurnClient(
         fun registerOnTransaction(responseCallback: ResponseCallback) {
             responseCallback.registeredAt = System.currentTimeMillis()
             this.resCb[responseCallback.transactionId] = responseCallback
+        }
+
+        fun unregisterOnTransaction(responseCallback: ResponseCallback) {
+            resCb.remove(responseCallback.transactionId)
         }
 
         override fun run() {
@@ -503,19 +522,25 @@ class TurnClient(
 
         @OptIn(ExperimentalStdlibApi::class)
         suspend fun sendMessage(message: Message): Message {
-            return suspendCancellableCoroutine { cont ->
-                sendReqMessage(message, object : ResponseCallback() {
-                    override val timeout: Int = REQUEST_TIMEOUT
-                    override val transactionId: String = message.header.txId.toHexString()
+            return withContext(Dispatchers.IO) {
+                suspendCancellableCoroutine { cont ->
+                    val callback = object : ResponseCallback() {
+                        override val timeout: Int = REQUEST_TIMEOUT
+                        override val transactionId: String = message.header.txId.toHexString()
 
-                    override fun onResponse(response: Message) {
-                        cont.resume(response)
-                    }
+                        override fun onResponse(response: Message) {
+                            cont.resume(response)
+                        }
 
-                    override fun onTimeout() {
-                        cont.resumeWithException(IOException("Request timed out"))
+                        override fun onTimeout() {
+                            cont.resumeWithException(IOException("Request timed out"))
+                        }
                     }
-                })
+                    sendReqMessage(message, callback)
+                    cont.invokeOnCancellation {
+                        unregisterOnTransaction(callback)
+                    }
+                }
             }
         }
 

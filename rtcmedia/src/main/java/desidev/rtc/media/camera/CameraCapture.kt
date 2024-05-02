@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.StateFlow
 interface CameraCapture {
     val selectedCamera: StateFlow<CameraDeviceInfo>
     val state: StateFlow<CameraState>
+    val isCapturing: StateFlow<Boolean>
 
     /**
      * Opening the camera don't start encoding frames but you can see the preview.

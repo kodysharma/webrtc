@@ -18,6 +18,7 @@ import java.net.InetSocketAddress
 import kotlin.test.Test
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.measureTime
 
 class TurnClientTest {
     private val username = "test"
@@ -28,30 +29,27 @@ class TurnClientTest {
     fun allocateTest(): Unit = runBlocking {
         val peerAddress = InetSocketAddress("192.168.127.12", 8551)
         val client = TurnClient(serverAddress, username, password)
-        val result = client.createAllocation()
 
-        println("first allocation: ")
-        println("${result.getOrThrow()}")
+        val measuredTime =  measureTime {
+            repeat(10) {
+                val result = client.createAllocation()
+                assert(result.isSuccess) {
+                    "allocation failed ${result.exceptionOrNull()}"
+                }
 
-        println("Creating bind channel...")
-        client.createChannel(AddressValue.from(peerAddress.address, peerAddress.port)).let {
-            assert(it.isSuccess)
+                val bindResult = client.createChannel(
+                    AddressValue.from(
+                        peerAddress.address, peerAddress.port
+                    )
+                )
+                assert(bindResult.isSuccess) {
+                    "binding failed ${bindResult.exceptionOrNull()}"
+                }
+                client.deleteAllocation()
+            }
         }
 
-        println("Deleting allocation")
-        client.deleteAllocation()
-
-        println("second allocation: ")
-        val secondAllocation = client.createAllocation()
-        println("${secondAllocation.getOrThrow()}")
-
-        println("Creating bind channel...")
-        client.createChannel(AddressValue.from(peerAddress.address, peerAddress.port)).let {
-            assert(it.isSuccess)
-        }
-
-        println("Deleting allocation")
-        client.deleteAllocation()
+        println("Measured time: $measuredTime")
     }
 
 
@@ -61,7 +59,7 @@ class TurnClientTest {
         val peer2Channel = Channel<ICECandidate>(Channel.CONFLATED)
         val scope = CoroutineScope(Dispatchers.IO)
 
-        val messageTemplate = listOf<String>(
+        val messageTemplate = listOf(
             "Hello",
             "How are you?",
             "I am fine",
@@ -85,7 +83,8 @@ class TurnClientTest {
                 println("peer2 ice candidate: $peer2Ice")
 
                 val peer2Address = InetAddress.getByName(peer2Ice.ip)
-                val bindingResult = client.createChannel(AddressValue.from(peer2Address, peer2Ice.port))
+                val bindingResult =
+                    client.createChannel(AddressValue.from(peer2Address, peer2Ice.port))
 
                 val dataChannel = bindingResult.getOrThrow()
                 // callback function to receive messages from the remote peer
@@ -139,7 +138,7 @@ class TurnClientTest {
 
 
     @Test
-    fun receivingMessageTest() : Unit = runBlocking(Dispatchers.IO) {
+    fun receivingMessageTest(): Unit = runBlocking(Dispatchers.IO) {
         val peerAddress = InetAddress.getByName("139.59.85.69")
         val peerAddressValue = AddressValue.from(peerAddress, 8851)
         val client = TurnClient(serverAddress, username, password)

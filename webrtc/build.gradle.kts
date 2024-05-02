@@ -9,10 +9,9 @@ afterEvaluate {
     publishing {
         publications {
             create<MavenPublication>("release") {
-                artifactId = "rtc"
-                groupId = "desidev.rtc"
-                version = "1.0.0"
-
+                artifactId = "webrtc"
+                groupId = "online.desidev"
+                version = "1.0.1"
                 from(components["release"])
             }
         }
@@ -66,6 +65,10 @@ dependencies {
     api(project(":rtcmedia"))
     api(project(":utility"))
     implementation("online.desidev:kotlinutils:1.0.0")
+
+    implementation(libs.gson)
+    androidTestImplementation(libs.androidx.rules)
+    androidTestImplementation(libs.androidx.junit)
 
     implementation(libs.kotlin.reflect)
     implementation(libs.kotlinx.serialization.protobuf)

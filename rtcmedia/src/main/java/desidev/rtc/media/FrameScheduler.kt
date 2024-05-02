@@ -3,6 +3,7 @@ package desidev.rtc.media
 import androidx.compose.ui.graphics.ImageBitmap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlin.coroutines.CoroutineContext
 
@@ -16,6 +17,8 @@ class FrameScheduler(coroutineContext: CoroutineContext = Dispatchers.Default) :
 
     private val frameChannel = Channel<ImageBitmap>()
     val currentFrame = frameChannel.receiveAsFlow()
+
+    val currentTimeStampUs = MutableStateFlow<Long>(0)
 
     private var timeOffsetUs: Long = 0
 

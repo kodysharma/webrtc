@@ -10,7 +10,9 @@ import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.rule.GrantPermissionRule
 import com.google.gson.GsonBuilder
 import desidev.rtc.media.camera.CameraCapture
-import desidev.videocall.service.rtcmsg.RTCMessage
+import desidev.rtc.media.camera.CameraCaptureImpl
+import desidev.rtc.media.camera.CameraLensFacing
+import desidev.rtc.rtcmsg.RTCMessage
 import kotlinx.coroutines.channels.consumeEach
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.ExperimentalSerializationApi
@@ -19,6 +21,7 @@ import kotlinx.serialization.encodeToByteArray
 import kotlinx.serialization.protobuf.ProtoBuf
 import org.junit.Rule
 import org.junit.Test
+import kotlin.reflect.jvm.isAccessible
 
 class SampleTest {
 
@@ -34,7 +37,8 @@ class SampleTest {
         runBlocking {
             val cameraCapture =
                 CameraCapture.create(InstrumentationRegistry.getInstrumentation().targetContext)
-            cameraCapture.start()
+
+            cameraCapture.startCapture()
 
             Log.d("cameraSampleTest", "Camera capture started")
             val channel = cameraCapture.compressChannel()
@@ -142,5 +146,19 @@ class SampleTest {
         cameraManager.cameraIdList.forEach { id ->
             logCameraCharacteristics(cameraManager.getCameraCharacteristics(id))
         }
+    }
+
+
+    @Test
+    fun printCameraSupportedResolutions() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val cameraCapture = CameraCapture.create(context)
+        val method = CameraCaptureImpl::class.members.find { it.name == "getSupportedSize" }
+        method?.isAccessible = true
+        val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val cameraId = cameraCapture.getCameras().first { it.lensFacing == CameraLensFacing.FRONT }.id
+        val characteristics = cameraManager.getCameraCharacteristics(cameraId)
+        val result = method?.call(cameraCapture, characteristics, CameraCapture.Quality.Lowest)
+        Log.d("printCameraSupportedResolutions", result.toString())
     }
 }
