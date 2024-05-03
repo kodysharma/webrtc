@@ -11,7 +11,7 @@ afterEvaluate {
             create<MavenPublication>("release") {
                 artifactId = "webrtc"
                 groupId = "online.desidev"
-                version = "1.0.1"
+                version = "2.0.0"
                 from(components["release"])
             }
         }

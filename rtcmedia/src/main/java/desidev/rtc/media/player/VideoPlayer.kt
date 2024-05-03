@@ -110,7 +110,7 @@ class VideoPlayer(
 
     private val bitmapPool = BitmapPool(
         dimen = Size(imageReader.width, imageReader.height),
-        debug = true,
+        debug = false,
         tag = "$TAG: bitmapPool"
     )
     private val currentFrame = MutableStateFlow(bitmapPool.getBitmap())

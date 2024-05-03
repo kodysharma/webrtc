@@ -15,7 +15,7 @@ data class RTCMessage(
     val audioSample: Sample? = null,
     val videoSample: Sample? = null,
     val control: Control? = null,
-    val acknowledge: Control.Acknowledge? = null
+    val acknowledge: Acknowledge? = null
 ) {
     @Serializable
     data class Control(
@@ -36,11 +36,13 @@ data class RTCMessage(
             val streamType: StreamType
         )
 
-        @Serializable
-        data class Acknowledge(
-            val txId: Int
-        )
+        override fun toString(): String {
+            return "Control(txId=$txId, ${streamEnable ?: streamDisable})"
+        }
     }
+
+    @Serializable
+    data class Acknowledge(val txId: Int)
 
     @Serializable
     data class Format(
@@ -73,7 +75,6 @@ data class RTCMessage(
             return result
         }
 
-        @OptIn(ExperimentalStdlibApi::class)
         override fun toString(): String {
             val oneOfValue: Any = when {
                 integer != null -> integer
@@ -118,6 +119,7 @@ data class RTCMessage(
             audioSample != null -> audioSample
             videoSample != null -> videoSample
             control != null -> control
+            acknowledge != null -> acknowledge
             else -> throw IllegalStateException("Unexpected value: $this")
         }
         return "RTCMessage($oneOfValue)"

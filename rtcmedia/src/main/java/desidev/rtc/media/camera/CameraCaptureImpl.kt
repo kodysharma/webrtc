@@ -81,15 +81,15 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
     private val _state = MutableStateFlow(CameraState.INACTIVE)
     override val state: StateFlow<CameraState> = _state
 
-    private val isCaptureRunning = MutableStateFlow(false)
-    override val isCapturing: StateFlow<Boolean> = isCaptureRunning.asStateFlow()
+    private val _isCaptureRunning = MutableStateFlow(false)
+    override val isCaptureRunning: StateFlow<Boolean> = _isCaptureRunning.asStateFlow()
 
     private val cameraManager: CameraManager =
         context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
 
-    private val previewImageReader: ImageReader
-    private val previewImageState: MutableStateFlow<BitmapWrapper>
-    private val bitmapPool: BitmapPool
+    private val previewImageState: MutableStateFlow<BitmapWrapper?> = MutableStateFlow(null)
+    private var previewImageReader: ImageReader? = null
+    private var bitmapPool: BitmapPool? = null
     private var encoder: Encoder? = null
 
     private val _selectedCamera =
@@ -103,28 +103,8 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
     private val displayRot: Int
 
     init {
-        val currentCameraCharacteristics =
-            cameraManager.getCameraCharacteristics(selectedCamera.value.id)
-        val (width, height) = getSupportedSize(currentCameraCharacteristics, cameraQuality)
-        Log.d(TAG, "OutputSize: $width x $height")
-        bitmapPool = BitmapPool(dimen = Size(width, height), debug = true, tag = TAG)
-        previewImageState = MutableStateFlow(bitmapPool.getBitmap())
-        previewImageReader = ImageReader.newInstance(width, height, ImageFormat.YUV_420_888, 2)
-        previewImageReader.setOnImageAvailableListener({ imageReader ->
-            imageReader.acquireNextImage()?.let { image ->
-                if (previewImageState.subscriptionCount.value > 0) {
-                    val bitmapWrapper = bitmapPool.getBitmap()
-                    yuvToRgbConverter.yuvToRgb(image, bitmapWrapper.bitmap)
-                    val old = previewImageState.getAndUpdate { bitmapWrapper }
-                    old.release()
-                }
-                image.close()
-            }
-        }, handler)
-
         val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
         windowManager.defaultDisplay.rotation
-
         // Get the current display rotation
         displayRot = ContextCompat.getDisplayOrDefault(context.applicationContext).rotation.let {
             when (it) {
@@ -172,11 +152,19 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
     override suspend fun closeCamera() {
         mutex.withLock {
             if (state.value == CameraState.ACTIVE) {
-                if (isCapturing.value) stopCapture()
+                if (isCaptureRunning.value) stopCapture()
                 session?.stopCaptureRequest()
                 session = null
                 cameraDevice?.close()
                 cameraDevice = null
+                previewImageReader?.close()
+                previewImageReader = null
+                previewImageState.apply {
+                    value?.bitmap?.recycle()
+                    value = null
+                }
+                bitmapPool?.clear()
+                bitmapPool = null
                 _state.value = CameraState.INACTIVE
             }
         }
@@ -185,29 +173,31 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
 
     override suspend fun startCapture() {
         mutex.withLock {
-            if (isCapturing.value) return@withLock
+            if (isCaptureRunning.value) return@withLock
             if (state.value == CameraState.RELEASED) {
                 throw IllegalStateException("Camera is released")
             }
 
-            encoder = Encoder()
-            encoder?.start()
             // if the camera is not opened, open it first
             if (cameraDevice == null) {
                 cameraDevice = openCameraDevice()
             }
+
+            encoder = Encoder()
+            encoder?.start()
+
             cameraDevice?.let {
                 session = configSession(it)
                 session?.createCaptureRequest()
             }
             _state.value = CameraState.ACTIVE
-            isCaptureRunning.value = true
+            _isCaptureRunning.value = true
         }
     }
 
     override suspend fun stopCapture() {
         mutex.withLock {
-            if (!isCapturing.value) return@withLock
+            if (!isCaptureRunning.value) return@withLock
             encoder?.stop()
             encoder = null
             session?.close()
@@ -215,33 +205,29 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
                 session = configSession(it)
                 session?.createCaptureRequest()
             }
-            isCaptureRunning.value = false
+            _isCaptureRunning.value = false
         }
     }
 
 
     override suspend fun release() {
         mutex.withLock {
+            if (state.value == CameraState.ACTIVE) {
+                closeCamera()
+            }
             _state.value = CameraState.RELEASED
-            session?.close()
-            session = null
-            cameraDevice?.close()
-            cameraDevice = null
-
-            encoder?.stop()
-            encoder = null
-
-            previewImageReader.close()
             handlerThread.quit()
             scope.cancel()
-            previewImageState.value.release()
-            bitmapPool.clear()
         }
     }
+
 
     @SuppressLint("MissingPermission")
     private suspend fun openCameraDevice(): CameraDevice = suspendCancellableCoroutine { cont ->
         val cameraId = selectedCamera.value.id
+        val (width, height) = selectSupportedSize(cameraId)
+        setupPreview(width, height)
+
         cameraManager.openCamera(
             cameraId,
             object : CameraDevice.StateCallback() {
@@ -276,10 +262,45 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
         )
     }
 
+    private fun selectSupportedSize(cameraId: String): Pair<Int, Int> {
+        val characteristics = cameraManager.getCameraCharacteristics(cameraId)
+        return getSupportedSize(characteristics, cameraQuality)
+    }
+
+    private fun getSupportedSize(
+        characteristics: CameraCharacteristics,
+        quality: CameraCapture.Quality
+    ): Pair<Int, Int> {
+        return characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)?.run {
+            val supportedSizes = getOutputSizes(ImageFormat.YUV_420_888)
+            supportedSizes.sortBy { it.width * it.height }
+            supportedSizes.first { it.width * it.height >= quality.pixelElems }
+                .let { Pair(it.width, it.height) }
+        } ?: throw IllegalStateException("No supported sizes found")
+    }
+
+    private fun setupPreview(width: Int, height: Int) {
+        bitmapPool = BitmapPool(dimen = Size(width, height), debug = false, tag = TAG)
+        previewImageReader =
+            ImageReader.newInstance(width, height, ImageFormat.YUV_420_888, 2).apply {
+                setOnImageAvailableListener({ imageReader ->
+                    imageReader.acquireNextImage()?.let { image ->
+                        if (previewImageState.subscriptionCount.value > 0) {
+                            val bitmapWrapper = bitmapPool!!.getBitmap()
+                            yuvToRgbConverter.yuvToRgb(image, bitmapWrapper.bitmap)
+                            val old = previewImageState.getAndUpdate { bitmapWrapper }
+                            old?.release()
+                        }
+                        image.close()
+                    }
+                }, handler)
+            }
+    }
+
     private suspend fun configSession(cameraDevice: CameraDevice): CameraCaptureSession =
         suspendCancellableCoroutine { cont ->
             val outputSurface = buildList {
-                add(previewImageReader.surface)
+                add(previewImageReader!!.surface)
                 encoder?.let { add(it.inputSurface) }
             }
 
@@ -307,7 +328,7 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
         val captureRequest = cameraDevice?.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)?.run {
             set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(30, 30))
             set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, 3)
-            addTarget(previewImageReader.surface)
+            addTarget(previewImageReader!!.surface)
             encoder?.let { addTarget(it.inputSurface) }
             build()
         }
@@ -351,15 +372,15 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
     override suspend fun selectCamera(info: CameraDeviceInfo) {
         mutex.withLock {
             val wasActive = state.value == CameraState.ACTIVE
-            val wasCapturing = isCapturing.value
+            val wasCapturing = isCaptureRunning.value
             if (state.value == CameraState.ACTIVE) {
                 closeCamera()
             }
-            // clear the last preview frame
-            previewImageState.value = bitmapPool.getBitmap()
+
             _selectedCamera.value = info
 
             if (wasCapturing) {
+                // start capture also open the camera
                 startCapture()
             } else if (wasActive) {
                 openCamera()
@@ -387,9 +408,9 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
     override fun PreviewView(modifier: Modifier) {
         val cameraState by state.collectAsState()
         val currentCamera by selectedCamera.collectAsState()
-        val image = previewImageState.collectAsState().value.bitmap
+        val image = previewImageState.collectAsState().value?.bitmap
 
-        if (cameraState == CameraState.ACTIVE) {
+        if (cameraState == CameraState.ACTIVE && image != null) {
             val relativeRotation = remember(currentCamera) { computeRelativeRotation() }
             val xMirror =
                 remember(currentCamera) { if (currentCamera.lensFacing == CameraLensFacing.FRONT) -1f else 1f }
@@ -434,17 +455,6 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
         }
     }
 
-    private fun getSupportedSize(
-        characteristics: CameraCharacteristics,
-        quality: CameraCapture.Quality
-    ): Pair<Int, Int> {
-        return characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)?.run {
-            val supportedSizes = getOutputSizes(ImageFormat.YUV_420_888)
-            supportedSizes.sortBy { it.width * it.height }
-            supportedSizes.first { it.width * it.height >= quality.pixelElems }
-                .let { Pair(it.width, it.height) }
-        } ?: throw IllegalStateException("No supported sizes found")
-    }
 
     private inner class Encoder {
         lateinit var inputSurface: Surface
@@ -521,7 +531,7 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
         private fun createFormat(): MediaFormat {
             return MediaFormat.createVideoFormat(
                 MediaFormat.MIMETYPE_VIDEO_AVC,
-                previewImageReader.width, previewImageReader.height
+                previewImageReader!!.width, previewImageReader!!.height
             ).apply {
                 setInteger(
                     MediaFormat.KEY_COLOR_FORMAT,

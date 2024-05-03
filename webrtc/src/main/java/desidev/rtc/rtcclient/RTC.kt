@@ -2,7 +2,6 @@ package desidev.rtc.rtcclient
 
 import android.util.Log
 import desidev.rtc.rtcmsg.RTCMessage
-import desidev.rtc.rtcmsg.RTCMessage.Control.Acknowledge
 import desidev.rtc.rtcmsg.RTCMessage.Control.StreamDisable
 import desidev.rtc.rtcmsg.RTCMessage.Control.StreamEnable
 import desidev.rtc.rtcmsg.RTCMessage.Control.StreamType
@@ -103,6 +102,17 @@ class RTC : AutoCloseable {
                 localIce = null
                 remoteIce = null
                 dataChannel = null
+                if (remoteAudioStreamFormat != null) {
+                    remoteAudioStreamFormat = null
+                    trackListener?.onAudioStreamDisable()
+                }
+                if (remoteVideoStreamFormat != null) {
+                    remoteVideoStreamFormat = null
+                    trackListener?.onVideoStreamDisable()
+                }
+
+                videoStmMutex.withLock { videoStmEnable = false }
+                audioStmMutex.withLock { audioStmEnable = false }
             }
         }
     }
@@ -140,9 +150,7 @@ class RTC : AutoCloseable {
             if (isPeerConnectionExist()) {
                 throw IllegalStateException("Peer connection is closed!")
             }
-            sendControlMessage(
-                RTCMessage.Control(streamDisable = StreamDisable(StreamType.Video))
-            )
+            sendControlMessage(RTCMessage.Control(streamDisable = StreamDisable(StreamType.Video)))
             videoStmEnable = false
         }
     }
@@ -205,13 +213,12 @@ class RTC : AutoCloseable {
                 return@receiveMessage
             }
 
-            Log.d(TAG, "Received RTCMessage: $rtcMessage")
+//            Log.d(TAG, "Received RTCMessage: $rtcMessage")
 
             when {
                 rtcMessage.control != null -> {
                     val control = rtcMessage.control
                     scope.launch { sendAck(control.txId) }
-
                     when {
                         control.streamEnable != null -> {
                             val streamEnable = control.streamEnable
@@ -258,37 +265,31 @@ class RTC : AutoCloseable {
     }
 
 
-    @OptIn(ExperimentalSerializationApi::class)
     private suspend fun sendControlMessage(control: RTCMessage.Control) {
-        withContext(Dispatchers.IO) {
-            val message = RTCMessage(control = control)
-            val bytes = ProtoBuf.encodeToByteArray(message)
+        val message = RTCMessage(control = control)
+        val timeToSend = measureTime {
+            do {
+                sendMessage(message)
+            } while (!acknowledgement.isAck(message.control!!))
+        }
+        Log.d(
+            TAG,
+            "Sent control message in ${timeToSend.inWholeMilliseconds} ms, message = $message"
+        )
+    }
 
-            val timeToSend = measureTime {
-                do {
-                    dataChannel?.sendMessage(bytes)
-                } while (!acknowledgement.isAck(message.control!!))
-            }
-            Log.d(
-                TAG,
-                "Sent control message in ${timeToSend.inWholeMilliseconds} ms, message = $message"
-            )
+    @OptIn(ExperimentalSerializationApi::class)
+    private suspend fun sendMessage(message: RTCMessage) {
+        withContext(Dispatchers.IO) {
+            val bytes = ProtoBuf.encodeToByteArray(message)
+            dataChannel?.sendMessage(bytes)
         }
     }
 
-    @OptIn(ExperimentalSerializationApi::class)
-    private fun sendMessage(message: RTCMessage) {
-        val bytes = ProtoBuf.encodeToByteArray(message)
-        dataChannel?.sendMessage(bytes)
-    }
-
-    @OptIn(ExperimentalSerializationApi::class)
     private suspend fun sendAck(txId: Int) {
         withContext(Dispatchers.IO) {
-            val ackMsg = RTCMessage(acknowledge = Acknowledge(txId = txId)).let {
-                ProtoBuf.encodeToByteArray(it)
-            }
-            dataChannel?.sendMessage(ackMsg)
+            val ackMsg = RTCMessage(acknowledge = RTCMessage.Acknowledge(txId = txId))
+            sendMessage(ackMsg)
         }
     }
 

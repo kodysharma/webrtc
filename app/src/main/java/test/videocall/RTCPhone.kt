@@ -148,7 +148,6 @@ class RTCPhone(context: Context) : Actor<RTCPhoneAction>(Dispatchers.Default) {
             audioPlayer?.stop()
         }
     }
-
     init {
         rtc.setTrackListener(rtcTrackListener)
         scope.launch {
@@ -163,7 +162,6 @@ class RTCPhone(context: Context) : Actor<RTCPhoneAction>(Dispatchers.Default) {
         }
         subscribeSignalEvents()
     }
-
 
     suspend fun getPeers(): List<Peer> {
         return signalClient.getPeers()
@@ -212,7 +210,7 @@ class RTCPhone(context: Context) : Actor<RTCPhoneAction>(Dispatchers.Default) {
                         }
                         val format = voiceRecorder.getCompressFormat()
 
-                        rtc.addAudioSource(format.await().toRTCFormat(), flow)
+//                        rtc.addAudioSource(format.await().toRTCFormat(), flow)
                     }
                 }
             }
@@ -230,7 +228,7 @@ class RTCPhone(context: Context) : Actor<RTCPhoneAction>(Dispatchers.Default) {
             val (data, info) = it
             Sample(buffer = data, ptsUs = info.presentationTimeUs, flags = info.flags)
         }
-        rtc.addVideoSource(format, samplesFlow)
+//        rtc.addVideoSource(format, samplesFlow)
     }
 
     @Composable

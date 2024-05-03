@@ -64,6 +64,7 @@
               <option name="preferredColumnWidths">
                 <map>
                   <entry key="Duration" value="90" />
+                  <entry key="Small_Phone_API_33" value="120" />
                   <entry key="Tests" value="360" />
                   <entry key="Xiaomi Redmi Note 4" value="120" />
                 </map>

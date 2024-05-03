@@ -43,7 +43,7 @@ the conversion is done into these formats.
 More about each format: https://www.fourcc.org/yuv.php
 */
 
-@kotlin.annotation.Retention(AnnotationRetention.SOURCE)
+@Retention(AnnotationRetention.SOURCE)
 @IntDef(ImageFormat.NV21, ImageFormat.YUV_420_888)
 annotation class YuvType
 

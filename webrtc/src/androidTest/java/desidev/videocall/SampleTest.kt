@@ -3,6 +3,7 @@ package desidev.videocall
 import android.Manifest
 import android.content.Context
 import android.graphics.ImageFormat
+import android.graphics.ImageFormat.YUV_420_888
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.util.Log
@@ -97,7 +98,7 @@ class SampleTest {
                     add(
                         when (formatInt) {
                             ImageFormat.JPEG -> "JPEG"
-                            ImageFormat.YUV_420_888 -> "YUV_420_888"
+                            YUV_420_888 -> "YUV_420_888"
                             ImageFormat.RAW_SENSOR -> "RAW_SENSOR"
                             ImageFormat.RAW10 -> "RAW10"
                             ImageFormat.RAW12 -> "RAW12"
@@ -156,9 +157,13 @@ class SampleTest {
         val method = CameraCaptureImpl::class.members.find { it.name == "getSupportedSize" }
         method?.isAccessible = true
         val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-        val cameraId = cameraCapture.getCameras().first { it.lensFacing == CameraLensFacing.FRONT }.id
-        val characteristics = cameraManager.getCameraCharacteristics(cameraId)
-        val result = method?.call(cameraCapture, characteristics, CameraCapture.Quality.Lowest)
-        Log.d("printCameraSupportedResolutions", result.toString())
+
+        val cameras = cameraCapture.getCameras()
+        cameras.forEach { camera ->
+            val characteristics = cameraManager.getCameraCharacteristics(camera.id)
+            val size = method?.call(cameraCapture, characteristics, CameraCapture.Quality.Lowest)
+            val sizes = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)?.getOutputSizes(YUV_420_888)
+            Log.d("printCameraSupportedResolutions", "camera: $camera, size: $size : ${sizes.contentToString()}")
+        }
     }
 }

@@ -348,7 +348,7 @@ fun OutGoingCallScreen(
 
             val name = createRef()
             Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
+                horizontalAlignment = CenterHorizontally,
                 modifier = Modifier.constrainAs(name) {
                     centerHorizontallyTo(parent)
                     top.linkTo(parent.top, 40.dp)
@@ -387,7 +387,7 @@ fun IncomingCallScreen(sender: Peer, onRejectClicked: () -> Unit, onAcceptClicke
     ConstraintLayout(modifier = Modifier.fillMaxSize()) {
         val name = createRef()
         Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
+            horizontalAlignment = CenterHorizontally,
             modifier = Modifier.constrainAs(name) {
                 centerHorizontallyTo(parent)
                 top.linkTo(parent.top, 40.dp)
