@@ -8,6 +8,7 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
+import android.media.Image
 import android.media.ImageReader
 import android.media.MediaCodec
 import android.media.MediaCodec.BufferInfo
@@ -57,6 +58,7 @@ import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import online.desidev.kotlinutils.ConditionLock
 import online.desidev.kotlinutils.ReentrantMutex
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -97,6 +99,8 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
             find { it.lensFacing == CameraLensFacing.FRONT } ?: first()
         })
     override val selectedCamera: StateFlow<CameraDeviceInfo> = _selectedCamera
+    private val isCamOpenCond = ConditionLock(false)
+    private val capSesOpenCond = ConditionLock(false)
     private var cameraDevice: CameraDevice? = null
     private var session: CameraCaptureSession? = null
     private val cameraQuality: CameraCapture.Quality = CameraCapture.Quality.Lowest
@@ -157,7 +161,17 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
                 session = null
                 cameraDevice?.close()
                 cameraDevice = null
-                previewImageReader?.close()
+                isCamOpenCond.awaitFalse()
+
+                handler.post {
+                    // release the image reader safely
+                    previewImageReader = previewImageReader?.let { reader ->
+                        reader.setOnImageAvailableListener(null, null)
+                        reader.close()
+                        null
+                    }
+                }
+
                 previewImageReader = null
                 previewImageState.apply {
                     value?.bitmap?.recycle()
@@ -216,7 +230,10 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
                 closeCamera()
             }
             _state.value = CameraState.RELEASED
-            handlerThread.quit()
+            withContext(Dispatchers.IO) {
+                handlerThread.quitSafely()
+                handlerThread.join()
+            }
             scope.cancel()
         }
     }
@@ -232,6 +249,7 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
             cameraId,
             object : CameraDevice.StateCallback() {
                 override fun onOpened(camera: CameraDevice) {
+                    isCamOpenCond.set(true)
                     cont.resume(camera)
                 }
 
@@ -251,10 +269,12 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
 
                 override fun onDisconnected(camera: CameraDevice) {
                     Log.d(TAG, "camera device ${camera.id} got disconnected")
+                    isCamOpenCond.set(false)
                     onCameraDisconnected(camera)
                 }
 
                 override fun onClosed(camera: CameraDevice) {
+                    isCamOpenCond.set(false)
                     Log.d(TAG, "camera device ${camera.id} is now closed")
                 }
             },
@@ -284,14 +304,15 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
         previewImageReader =
             ImageReader.newInstance(width, height, ImageFormat.YUV_420_888, 2).apply {
                 setOnImageAvailableListener({ imageReader ->
-                    imageReader.acquireNextImage()?.let { image ->
-                        if (previewImageState.subscriptionCount.value > 0) {
-                            val bitmapWrapper = bitmapPool!!.getBitmap()
-                            yuvToRgbConverter.yuvToRgb(image, bitmapWrapper.bitmap)
-                            val old = previewImageState.getAndUpdate { bitmapWrapper }
-                            old?.release()
+                    imageReader.acquireLatestImage()?.let { image ->
+                        image.use {
+                            if (previewImageState.subscriptionCount.value > 0) {
+                                val bitmapWrapper = bitmapPool!!.getBitmap()
+                                yuvToRgbConverter.yuvToRgb(image, bitmapWrapper.bitmap)
+                                val old = previewImageState.getAndUpdate { bitmapWrapper }
+                                old?.release()
+                            }
                         }
-                        image.close()
                     }
                 }, handler)
             }
@@ -308,6 +329,7 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
                 outputSurface,
                 object : CameraCaptureSession.StateCallback() {
                     override fun onConfigured(session: CameraCaptureSession) {
+                        capSesOpenCond.set(true)
                         cont.resume(session)
                     }
 
@@ -316,6 +338,7 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
                     }
 
                     override fun onClosed(session: CameraCaptureSession) {
+                        capSesOpenCond.set(false)
                         Log.d(TAG, "CameraCaptureSession is now closed")
                     }
                 },
@@ -335,13 +358,13 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
         setRepeatingRequest(captureRequest!!, null, handler)
     }
 
-    private fun CameraCaptureSession.stopCaptureRequest() {
+    private suspend fun CameraCaptureSession.stopCaptureRequest() {
         try {
             stopRepeating()
-            abortCaptures()
             close()
+            capSesOpenCond.awaitFalse()
         } catch (exc: Exception) {
-            Log.e(TAG, exc.message, exc)
+            Log.e(TAG, "Could not capture session correctly", exc)
         }
     }
 

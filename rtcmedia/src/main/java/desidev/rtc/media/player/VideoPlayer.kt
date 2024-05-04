@@ -39,6 +39,7 @@ import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.job
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -118,14 +119,15 @@ class VideoPlayer(
 
     init {
         imageReader.setOnImageAvailableListener({ imReader ->
-            imReader.acquireNextImage()?.let { image ->
-                if (currentFrame.subscriptionCount.value > 0) {
-                    val frame = bitmapPool.getBitmap()
-                    yuvToRgbConverter.yuvToRgb(image, frame.bitmap)
-                    currentFrame.getAndUpdate { frame }.release()
-                    currentTimestampUs.value = image.timestamp / 1000
+            imReader.acquireLatestImage()?.let { image ->
+                image.use { img ->
+                    if (currentFrame.subscriptionCount.value > 0) {
+                        currentTimestampUs.value = img.timestamp / 1000
+                        val frame = bitmapPool.getBitmap()
+                        yuvToRgbConverter.yuvToRgb(img, frame.bitmap)
+                        currentFrame.getAndUpdate { frame }.release()
+                    }
                 }
-                image.close()
             }
         }, handler)
     }
@@ -205,7 +207,11 @@ class VideoPlayer(
                 Log.e(TAG, "Could not stop video decoder")
             }
 
-            handlerThread.quitSafely()
+            withContext(Dispatchers.IO) {
+                handlerThread.quitSafely()
+                handlerThread.join()
+            }
+            imageReader.setOnImageAvailableListener(null, null)
             imageReader.close()
 
             Log.i(TAG, "Stopped")

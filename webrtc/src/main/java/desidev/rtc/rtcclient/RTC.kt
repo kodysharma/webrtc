@@ -145,11 +145,10 @@ class RTC : AutoCloseable {
         }
     }
 
+
     suspend fun disableVideoStream() {
         videoStmMutex.withLock {
-            if (isPeerConnectionExist()) {
-                throw IllegalStateException("Peer connection is closed!")
-            }
+            if (!isPeerConnectionExist()) throw IllegalStateException("Peer connection is closed!")
             sendControlMessage(RTCMessage.Control(streamDisable = StreamDisable(StreamType.Video)))
             videoStmEnable = false
         }
