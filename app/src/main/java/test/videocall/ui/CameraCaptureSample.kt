@@ -147,7 +147,7 @@ fun CameraCaptureSample(modifier: Modifier = Modifier) {
                 IconButton(onClick = {
                     scope.launch {
                         cameraCapture.apply {
-                            selectCamera(getCameras().first { it != selectedCamera.value })
+                            switchCamera(getCameras().first { it != selectedCamera.value })
                         }
                     }
                 }) {

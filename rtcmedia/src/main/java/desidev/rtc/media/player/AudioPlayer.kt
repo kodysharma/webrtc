@@ -54,9 +54,7 @@ class AudioPlayer(
     }
 
     fun queueAudioBuffer(audioBuffer: AudioBuffer) {
-        launch {
-            audioSamplesFlow.send(audioBuffer)
-        }
+        audioSamplesFlow.trySend(audioBuffer)
     }
 
     private fun processInputSamples(

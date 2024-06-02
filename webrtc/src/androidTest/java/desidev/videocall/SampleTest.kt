@@ -12,6 +12,7 @@ import androidx.test.rule.GrantPermissionRule
 import com.google.gson.GsonBuilder
 import desidev.rtc.media.camera.CameraCapture
 import desidev.rtc.media.camera.CameraCaptureImpl
+import desidev.rtc.media.camera.CameraDeviceInfo
 import desidev.rtc.media.camera.CameraLensFacing
 import desidev.rtc.rtcmsg.RTCMessage
 import kotlinx.coroutines.channels.consumeEach
@@ -98,7 +99,7 @@ class SampleTest {
                     add(
                         when (formatInt) {
                             ImageFormat.JPEG -> "JPEG"
-                            YUV_420_888 -> "YUV_420_888"
+                            ImageFormat.YUV_420_888 -> "YUV_420_888"
                             ImageFormat.RAW_SENSOR -> "RAW_SENSOR"
                             ImageFormat.RAW10 -> "RAW10"
                             ImageFormat.RAW12 -> "RAW12"
@@ -165,5 +166,19 @@ class SampleTest {
             val sizes = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)?.getOutputSizes(YUV_420_888)
             Log.d("printCameraSupportedResolutions", "camera: $camera, size: $size : ${sizes.contentToString()}")
         }
+    }
+
+
+    @Test
+    fun printAvailableCameras() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val cameraCapture = CameraCapture.create(context)
+        val method = CameraCaptureImpl::class.members.find { it.name == "getAvailableCameras" }
+        assert(method != null) { "method not found" }
+
+        method!!.isAccessible = true
+        val cameras = method.call(cameraCapture)
+        Log.d("Cameras", "cameras: $cameras")
+
     }
 }

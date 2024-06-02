@@ -46,7 +46,7 @@ interface CameraCapture {
      * Get all the available cameras device information.
      */
     fun getCameras(): List<CameraDeviceInfo>
-    suspend fun selectCamera(info: CameraDeviceInfo)
+    suspend fun switchCamera(info: CameraDeviceInfo)
     fun compressChannel(): ReceiveChannel<Pair<ByteArray, BufferInfo>>
     fun getMediaFormat(): Deferred<MediaFormat>
 

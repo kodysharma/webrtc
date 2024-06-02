@@ -10,8 +10,7 @@ afterEvaluate {
             create<MavenPublication>("release") {
                 artifactId = "turnclient"
                 groupId = "desidev.turnclient"
-                version = "1.0.0"
-
+                version = "2.1.0"
                 from(components["java"])
             }
         }
@@ -25,6 +24,7 @@ java {
 
 
 dependencies {
+    implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinutils)
     implementation(libs.kotlin.stdlib)
     implementation(libs.kotlinx.coroutines.core)

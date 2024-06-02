@@ -7,7 +7,7 @@ coreKtx = "1.12.0"
 junit = "4.13.2"
 junitVersion = "1.1.5"
 espressoCore = "3.5.1"
-kotlinutils = "1.0.0"
+kotlinutils = "1.2.0"
 kotlinxCoroutinesCoreVersion = "1.8.0-RC2"
 kotlinxSerializationProtobuf = "1.6.3"
 lifecycleRuntimeKtx = "2.7.0"
@@ -17,6 +17,7 @@ appcompat = "1.6.1"
 material = "1.11.0"
 core = "1.12.0"
 rules = "1.5.0"
+graphicsCore = "1.0.0-rc01"
 
 [libraries]
 androidx-constraintlayout-compose = { module = "androidx.constraintlayout:constraintlayout-compose", version.ref = "constraintlayoutCompose" }
@@ -48,26 +49,12 @@ kotlin-stdlib = { group = "org.jetbrains.kotlin", name = "kotlin-stdlib", versio
 kotlin-reflect = { group = "org.jetbrains.kotlin", name = "kotlin-reflect", version.ref = "kotlin" }
 kotlin-test = { group = "org.jetbrains.kotlin", name = "kotlin-test", version.ref = "kotlin" }
 
+
 androidx-core = { group = "androidx.core", name = "core", version.ref = "core" }
 coreLibraryDesugaring = { group = "com.android.tools", name = "desugar_jdk_libs", version = "2.0.4" }
 
 kotlinutils = { module = "online.desidev:kotlinutils", version.ref = "kotlinutils" }
-
-
-[bundles]
-# webrtc module uses the following compose dependencies
-webrtc-dep-bundle = [
-    "androidx-ui",
-    "androidx-ui-graphics",
-    "androidx-foundation-layout-android",
-    "androidx-ui-tooling",
-    "androidx-ui-tooling-preview",
-    "kotlin-reflect",
-    "kotlin-stdlib",
-    "androidx-core",
-    "androidx-core-ktx",
-    "gson"
-]
+androidx-graphics-core = { group = "androidx.graphics", name = "graphics-core", version.ref = "graphicsCore" }
 
 
 [plugins]

@@ -99,7 +99,7 @@ class RTCPhone(context: Context) : Actor<RTCPhoneAction>(Dispatchers.Default) {
         override fun onVideoStreamAvailable(videoFormat: RTCMessage.Format) {
             Log.i(TAG, "onVideoStreamAvailable: $videoFormat")
             remoteVideoPlayerState.value =
-                VideoPlayer(yuvToRgbConverter, videoFormat.toMediaFormat()).also { it.play() }
+                VideoPlayer(videoFormat.toMediaFormat()).also { it.play() }
         }
 
         override fun onAudioStreamAvailable(audioFormat: RTCMessage.Format) {
@@ -306,7 +306,6 @@ class RTCPhone(context: Context) : Actor<RTCPhoneAction>(Dispatchers.Default) {
                         stopSendingRealTimeData()
                         rtc.apply {
                             closePeerConnection()
-                            clearRemoteIce()
                         }
                         mutCallStateFlow.value = CallState.NoSession
                     } catch (ex: IOException) {
@@ -352,7 +351,6 @@ class RTCPhone(context: Context) : Actor<RTCPhoneAction>(Dispatchers.Default) {
                 if (callState is CallState.CallingToPeer) {
                     rtc.apply {
                         closePeerConnection()
-                        clearRemoteIce()
                     }
                     mutCallStateFlow.value = CallState.NoSession
                 }
@@ -364,7 +362,7 @@ class RTCPhone(context: Context) : Actor<RTCPhoneAction>(Dispatchers.Default) {
                     stopSendingRealTimeData()
                     rtc.apply {
                         closePeerConnection()
-                        clearRemoteIce()
+//                        clearRemoteIce()
                     }
                     mutCallStateFlow.value = CallState.NoSession
                 } else if (callState is CallState.IncomingCall) {

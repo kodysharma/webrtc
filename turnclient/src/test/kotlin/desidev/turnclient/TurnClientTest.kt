@@ -1,13 +1,9 @@
 package desidev.turnclient
 
 import desidev.turnclient.attribute.AddressValue
-import desidev.turnclient.message.Message
-import desidev.turnclient.message.MessageType
-import desidev.turnclient.message.StunRequestBuilder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.channels.produce
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.joinAll
@@ -15,10 +11,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.NetworkInterface
 import kotlin.test.Test
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
-import kotlin.time.measureTime
 
 class TurnClientTest {
     private val username = "test"
@@ -26,30 +22,36 @@ class TurnClientTest {
     private val serverAddress = InetSocketAddress("64.23.160.217", 3478)
 
     @Test
+    fun printLocalAddress() {
+        val interfaces = NetworkInterface.getNetworkInterfaces()
+        while (interfaces.hasMoreElements()) {
+            val networkInterface = interfaces.nextElement()
+
+            if (!networkInterface.isUp) continue
+
+            val addresses = networkInterface.inetAddresses
+            while (addresses.hasMoreElements()) {
+                val address = addresses.nextElement()
+                if (address.isSiteLocalAddress && !address.isLoopbackAddress) {
+                    println("Private IP Address: ${address.hostAddress}")
+                }
+            }
+        }
+    }
+
+    @Test
     fun allocateTest(): Unit = runBlocking {
         val peerAddress = InetSocketAddress("192.168.127.12", 8551)
         val client = TurnClient(serverAddress, username, password)
 
-        val measuredTime =  measureTime {
-            repeat(10) {
-                val result = client.createAllocation()
-                assert(result.isSuccess) {
-                    "allocation failed ${result.exceptionOrNull()}"
-                }
-
-                val bindResult = client.createChannel(
-                    AddressValue.from(
-                        peerAddress.address, peerAddress.port
-                    )
-                )
-                assert(bindResult.isSuccess) {
-                    "binding failed ${bindResult.exceptionOrNull()}"
-                }
-                client.deleteAllocation()
+        suspend fun allocate() {
+            client.createAllocation().let {
+                assert(it.isSuccess)
+                println("allocate ice: ${it.getOrNull()}")
             }
         }
 
-        println("Measured time: $measuredTime")
+        allocate()
     }
 
 
@@ -84,17 +86,19 @@ class TurnClientTest {
 
                 val peer2Address = InetAddress.getByName(peer2Ice.ip)
                 val bindingResult =
-                    client.createChannel(AddressValue.from(peer2Address, peer2Ice.port))
+                    client.bindChannel(AddressValue.from(peer2Address, peer2Ice.port))
 
                 val dataChannel = bindingResult.getOrThrow()
                 // callback function to receive messages from the remote peer
-                dataChannel.receiveMessage { bytes ->
-                    println("Peer 1 Received: ${bytes.decodeToString()}")
-                }
+                dataChannel.setDataCallback(object : DataCallback {
+                    override fun onReceived(data: ByteArray) {
+                        println("Peer 1 Received: ${data.decodeToString()}")
+                    }
+                })
 
                 while (isActive) {
                     val message = messageTemplate[(messageTemplate.indices).random()]
-                    dataChannel.sendMessage(message.encodeToByteArray())
+                    dataChannel.sendData(message.encodeToByteArray())
                     println("Peer 1 Send: $message")
                     delay((5..10).random().seconds)
                 }
@@ -116,17 +120,19 @@ class TurnClientTest {
 
                 val peer1Address = InetAddress.getByName(peer1Ice.ip)
                 val bindingResult =
-                    client.createChannel(AddressValue.from(peer1Address, peer1Ice.port))
+                    client.bindChannel(AddressValue.from(peer1Address, peer1Ice.port))
 
                 val dataChannel = bindingResult.getOrThrow()
                 // callback function to receive messages from the remote peer
-                dataChannel.receiveMessage { bytes ->
-                    println("Peer 2 Received: ${bytes.decodeToString()}")
-                }
+                dataChannel.setDataCallback(object : DataCallback {
+                    override fun onReceived(data: ByteArray) {
+                        println("Peer 2 Received: ${data.decodeToString()}")
+                    }
+                })
 
                 while (isActive) {
                     val message = messageTemplate[(messageTemplate.indices).random()]
-                    dataChannel.sendMessage(message.encodeToByteArray())
+                    dataChannel.sendData(message.encodeToByteArray())
                     println("Peer 2 Send: $message")
                     delay((5..10).random().seconds)
                 }
@@ -134,27 +140,5 @@ class TurnClientTest {
         }
 
         listOf(job1, job2).joinAll()
-    }
-
-
-    @Test
-    fun receivingMessageTest(): Unit = runBlocking(Dispatchers.IO) {
-        val peerAddress = InetAddress.getByName("139.59.85.69")
-        val peerAddressValue = AddressValue.from(peerAddress, 8851)
-        val client = TurnClient(serverAddress, username, password)
-        val result = client.createAllocation()
-        val relay = result.getOrThrow().find { it.type == ICECandidate.CandidateType.RELAY }
-
-        val channelBinding = client.createChannel(peerAddressValue).getOrThrow()
-        channelBinding.receiveMessage { bytes ->
-            println("Received: ${bytes.decodeToString()}")
-        }
-
-        println("relay: $relay")
-
-
-        while (true) {
-            delay(1.minutes)
-        }
     }
 }

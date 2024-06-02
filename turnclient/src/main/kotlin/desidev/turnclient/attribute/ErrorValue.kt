@@ -1,8 +1,5 @@
 package desidev.turnclient.attribute
 
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-
 data class ErrorValue(
     val code: Int,
     val reason: String

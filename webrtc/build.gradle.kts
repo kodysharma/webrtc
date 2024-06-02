@@ -11,7 +11,7 @@ afterEvaluate {
             create<MavenPublication>("release") {
                 artifactId = "webrtc"
                 groupId = "online.desidev"
-                version = "2.0.0"
+                version = "2.1.0"
                 from(components["release"])
             }
         }
@@ -64,9 +64,12 @@ dependencies {
     api(project(":turnclient"))
     api(project(":rtcmedia"))
     api(project(":utility"))
-    implementation("online.desidev:kotlinutils:1.0.0")
+    implementation(libs.kotlinutils)
+
 
     implementation(libs.gson)
+
+    testImplementation(libs.kotlin.test)
     androidTestImplementation(libs.androidx.rules)
     androidTestImplementation(libs.androidx.junit)
 

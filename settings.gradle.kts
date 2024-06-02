@@ -21,7 +21,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "CallService"
+rootProject.name = "webrtc-android"
 include(":app")
 include(":webrtc")
 include(":turnclient")

@@ -55,6 +55,13 @@ dependencies {
     implementation(project(":webrtc"))
     implementation(project(":rtcmedia"))
     implementation(project(":utility"))
+    implementation(libs.androidx.graphics.core)
+    runtimeOnly(files("../rtcmedia/libs/yuv.aar"))
+
+    implementation(libs.kotlinutils)
+
+    implementation(files("libs/yuv.aar"))
+
 
     implementation(libs.androidx.constraintlayout.compose)
     implementation(libs.androidx.core.ktx)

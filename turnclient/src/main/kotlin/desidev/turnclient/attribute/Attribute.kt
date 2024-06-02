@@ -1,55 +1,33 @@
 package desidev.turnclient.attribute
 
-/**
- * A generalized stun/turn attribute class.
- * This is not in use yet.
- * @param type the attribute type.
- */
+import desidev.turnclient.message.Message.Companion.generateTransactionId
 
-sealed class Attribute(val type: AttributeType) {
-    data class Username(
-        val username: String
-    ) : Attribute(AttributeType.USERNAME)
+class AttributeKey<T>(val typeCode: Int)
 
-    data class Password(
-        val password: String
-    ) : Attribute(AttributeType.PASSWORD)
+object AttributeKeys {
+    val USERNAME = AttributeKey<String>(0x0006)
+    val PASSWORD = AttributeKey<String>(0x0007)
+    val MESSAGE_INTEGRITY  = AttributeKey<ByteArray>(0x0008)
+    val XOR_MAPPED_ADDRESS = AttributeKey<ByteArray>(0x0020)
+    val LIFETIME = AttributeKey<Long>(0x000d)
+}
 
-    class MessageIntegrity(
-        val messageIntegrity: ByteArray
-    ) : Attribute(AttributeType.MESSAGE_INTEGRITY)
+class StunMessage {
+    var msgType: Int? = null
+    var msgLen: Int = 0
+    val magicCookie = 0x2112A442
+    val transactionId = generateTransactionId()
 
-    class ErrorCode(
-        val errorCode: Int
-    ) : Attribute(AttributeType.ERROR_CODE)
+    val attributes  = mutableMapOf<Int, Any>()
+    fun <T : Any> addAttr(key: AttributeKey<T>, value: T) {
+        attributes[key.typeCode] = value
+    }
 
-    class UnknownAttributes(
-        val unknownAttributes: List<AttributeType>
-    ) : Attribute(AttributeType.UNKNOWN_ATTRIBUTES)
-
-    class AllocateErrorCode(
-        val errorCode: Int
-    ) : Attribute(AttributeType.ALLOCATE_ERROR_CODE)
-
-    class Realm(
-        val realm: String
-    ) : Attribute(AttributeType.REALM)
-
-    class Nonce(
-        val nonce: String
-    ) : Attribute(AttributeType.NONCE)
-
-    class Software(
-        val software: String
-    ) : Attribute(AttributeType.SOFTWARE)
-
-    class Lifetime(
-        val lifetime: Int
-    ) : Attribute(AttributeType.LIFETIME)
-
-    class RequestedTransport(
-        val transport: TransportProtocol
-    ) : Attribute(AttributeType.REQUESTED_TRANSPORT)
-
-    data object DontFragment : Attribute(AttributeType.DONT_FRAGMENT)
+    inline fun <reified T : Any> getAttr(key: AttributeKey<T>): T? {
+        return attributes[key.typeCode] as? T
+    }
+}
+fun main() {
+    val msg = StunMessage()
+    msg.addAttr(AttributeKeys.USERNAME, "Neeraj Sharma")
 }

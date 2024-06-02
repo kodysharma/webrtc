@@ -1,11 +1,10 @@
 package desidev.turnclient.message
 
-import desidev.turnclient.util.toHexString
 import java.nio.ByteBuffer
 
 data class MessageHeader(
     val msgType: UShort,
-    val txId: ByteArray,
+    val txId: TransactionId,
     val magicCookie: Int,
     val msgLen: Int
 ) {
@@ -16,34 +15,29 @@ data class MessageHeader(
         buffer.putShort(msgType.toShort())
         buffer.putShort(msgLen.toShort())
         buffer.putInt(magicCookie)
-        buffer.put(txId)
+        buffer.put(txId.bytes)
     }
 
     override fun toString(): String = StringBuilder().apply {
         appendLine("MessageType(${MessageType.messageTypeToString(msgType)})")
         appendLine("MessageLength($msgLen)")
         appendLine("MagicCookie(${String.format("%02x", magicCookie)})")
-        appendLine("TransactionId(${txId.toHexString()})")
+        appendLine("TransactionId(${txId})")
     }.toString()
+    data class TransactionId(val bytes: ByteArray){
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (javaClass != other?.javaClass) return false
 
-    override fun equals(other: Any?): Boolean {
-        if (this === other) return true
-        if (javaClass != other?.javaClass) return false
+            other as TransactionId
 
-        other as MessageHeader
+            return bytes.contentEquals(other.bytes)
+        }
 
-        if (msgType != other.msgType) return false
-        if (!txId.contentEquals(other.txId)) return false
-        if (magicCookie != other.magicCookie) return false
-        return msgLen == other.msgLen
-    }
+        override fun hashCode(): Int {
+            return bytes.contentHashCode()
+        }
 
-    override fun hashCode(): Int {
-        var result = msgType.hashCode()
-        result = 31 * result + txId.contentHashCode()
-        result = 31 * result + magicCookie
-        result = 31 * result + msgLen
-        return result
     }
 
     companion object {
@@ -56,10 +50,10 @@ data class MessageHeader(
             val type = buffer.short
             val messageLen = buffer.short
             val magicCookie = buffer.int
-            val transactionId = ByteArray(12)
-            buffer.get(transactionId)
+            val txBytes = ByteArray(12)
+            buffer.get(txBytes)
 
-            return MessageHeader(type.toUShort(), transactionId, magicCookie, messageLen.toInt())
+            return MessageHeader(type.toUShort(), TransactionId(txBytes), magicCookie, messageLen.toInt())
         }
     }
 }

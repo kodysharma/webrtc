@@ -1,5 +1,6 @@
 package test.videocall.ui
 
+import android.Manifest
 import android.media.MediaCodec.BufferInfo
 import android.media.MediaFormat
 import android.util.Log
@@ -13,6 +14,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -30,44 +32,41 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import desidev.rtc.media.camera.CameraCapture.CameraState
 import desidev.rtc.media.camera.CameraCaptureImpl
 import desidev.rtc.media.player.VideoPlayer
 import desidev.rtc.rtcmsg.RTCMessage
-import desidev.utility.yuv.YuvToRgbConverter
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
+import test.videocall.permissionGrantState
 
 
 @Composable
 fun CameraToVideoPlayer() {
     val context = LocalContext.current
     val cameraCapture = remember { CameraCaptureImpl(context) }
-    val cameraState by cameraCapture.state.collectAsState()
     var format by remember { mutableStateOf<MediaFormat?>(null) }
+    var samples by remember { mutableStateOf<ReceiveChannel<Pair<ByteArray, BufferInfo>>?>(null) }
+
     val scope = rememberCoroutineScope()
-    var isCaptureStarted by remember { mutableStateOf(false) }
 
     val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val isCapturing by cameraCapture.isCaptureRunning.collectAsState()
 
-    LaunchedEffect(cameraState) {
-        if (cameraState == CameraState.INACTIVE) {
-            isCaptureStarted = false
-        }
-    }
 
     DisposableEffect(key1 = Unit) {
         val observer = LifecycleEventObserver { _, event ->
-            when(event) {
+            when (event) {
                 Lifecycle.Event.ON_RESUME -> {
                     Log.d("CameraToVideoPlayer", "ON_RESUME")
                     scope.launch {
                         cameraCapture.openCamera()
                     }
                 }
+
                 Lifecycle.Event.ON_PAUSE -> {
                     Log.d("CameraToVideoPlayer", "ON_PAUSE")
                     scope.launch {
@@ -75,7 +74,7 @@ fun CameraToVideoPlayer() {
                     }
                 }
 
-                else -> { }
+                else -> {}
             }
         }
         lifecycle.addObserver(observer)
@@ -87,6 +86,7 @@ fun CameraToVideoPlayer() {
     suspend fun start() {
         cameraCapture.startCapture()
         format = cameraCapture.getMediaFormat().await()
+        samples = cameraCapture.compressChannel()
         Log.d("CameraToVideoPlayer", "start")
     }
 
@@ -95,65 +95,88 @@ fun CameraToVideoPlayer() {
         Log.d("CameraToVideoPlayer", "stop")
     }
 
-    BoxWithConstraints(
-        contentAlignment = Alignment.Center,
-        modifier = Modifier.fillMaxSize()
-    ) {
-        val halfHeight = (maxHeight.value / 2).dp
-        if (isCaptureStarted && format != null) {
-            VideoPlayerView(
-                format = format!!,
-                samples = cameraCapture.compressChannel().receiveAsFlow().map {
-                    it.run {
-                        RTCMessage.Sample(
-                            ptsUs = second.presentationTimeUs, buffer = first, flags = second.flags
-                        )
-                    }
-                },
+    suspend fun toggleCamera() {
+        val deviceInfo =
+            cameraCapture.getCameras().first { it != cameraCapture.selectedCamera.value }
+        cameraCapture.switchCamera(deviceInfo)
+
+        if (cameraCapture.isCaptureRunning.value) {
+            format = cameraCapture.getMediaFormat().await()
+            samples = cameraCapture.compressChannel()
+        }
+    }
+
+    Scaffold { systemPadding ->
+        val (grantState, permRequester) = permissionGrantState(permissions = arrayOf(Manifest.permission.CAMERA))
+
+        if (grantState.value.isAllGranted) {
+            BoxWithConstraints(
+                contentAlignment = Alignment.Center,
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .height(halfHeight)
-                    .align(Alignment.TopCenter)
-            )
-        }
-
-        // preview
-        cameraCapture.PreviewView(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .height(halfHeight)
-                .fillMaxWidth()
-        )
-
-        Button(
-            onClick = {
-                scope.launch {
-                    isCaptureStarted = !isCaptureStarted
-                    if (isCaptureStarted) {
-                        start()
-                    } else {
-                        stop()
-                    }
+                    .fillMaxSize()
+                    .padding(systemPadding)
+            ) {
+                val halfHeight = (maxHeight.value / 2).dp
+                if (isCapturing && format != null && samples != null) {
+                    VideoPlayerView(
+                        format = format!!,
+                        samples = samples!!.receiveAsFlow().map {
+                            it.run {
+                                RTCMessage.Sample(
+                                    ptsUs = second.presentationTimeUs,
+                                    buffer = first,
+                                    flags = second.flags
+                                )
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(halfHeight)
+                            .align(Alignment.TopCenter)
+                    )
                 }
-            },
-            modifier = Modifier
-                .padding(8.dp)
-                .align(Alignment.BottomEnd)
-        ) {
-            Text(text = if (isCaptureStarted) "Stop" else "Start")
-        }
 
-        FilledIconButton(
-            onClick = {
-                scope.launch {
-                    cameraCapture.apply { selectCamera(getCameras().first { it != selectedCamera.value }) }
+                // preview
+                cameraCapture.PreviewView(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .height(halfHeight)
+                        .fillMaxWidth()
+                )
+
+                Button(
+                    onClick = {
+                        scope.launch {
+                            if (!isCapturing) {
+                                start()
+                            } else {
+                                stop()
+                            }
+                        }
+                    },
+                    modifier = Modifier
+                        .padding(8.dp)
+                        .align(Alignment.BottomEnd)
+                ) {
+                    Text(text = if (isCapturing) "Stop" else "Start")
                 }
-            },
-            modifier = Modifier
-                .align(Alignment.BottomStart)
-                .padding(8.dp)
-        ) {
-            Icon(imageVector = Icons.Default.Refresh, contentDescription = null)
+
+                FilledIconButton(
+                    onClick = {
+                        scope.launch { toggleCamera() }
+                    },
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(8.dp)
+                ) {
+                    Icon(imageVector = Icons.Default.Refresh, contentDescription = null)
+                }
+            }
+
+        } else {
+            LaunchedEffect(key1 = Unit) {
+                permRequester.requestDeniedPermissions()
+            }
         }
     }
 }
@@ -163,18 +186,15 @@ fun CameraToVideoPlayer() {
 fun VideoPlayerView(
     format: MediaFormat, samples: Flow<RTCMessage.Sample>, modifier: Modifier = Modifier
 ) {
-    val context = LocalContext.current
-    val yuvToRgbConverter = remember { YuvToRgbConverter(context) }
-
-    val videoPlayer = remember {
-        VideoPlayer(yuvToRgbConverter, format).also {
+    val videoPlayer = remember(format) {
+        VideoPlayer(format).also {
             Log.d("VideoPlayerView", "format: $format")
         }
     }
 
     val scope = rememberCoroutineScope()
 
-    DisposableEffect(Unit) {
+    DisposableEffect(format) {
         videoPlayer.play()
         scope.launch(Dispatchers.Default) {
             samples.collect { sample ->

@@ -58,7 +58,7 @@ data class AddressValue(
     companion object {
         fun from(byteArray: ByteArray): AddressValue {
             val afValue = byteArray[1].toInt()
-            val family = InetAF.values().find { it.code == afValue }
+            val family = InetAF.entries.find { it.code == afValue }
                 ?: throw IllegalArgumentException("Invalid address family")
             if (family == InetAF.IPV4) {
                 val port = (byteArray[2].toInt() and 0xFF shl 8) or (byteArray[3].toInt() and 0xFF)

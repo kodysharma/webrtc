@@ -1,36 +1,29 @@
 package desidev.utility
 
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.cancel
-import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicReference
 
 class SpeedMeter(private val label: String = "Speed") {
-    private val scope = CoroutineScope(Dispatchers.Unconfined)
-
     companion object {
         private const val TAG = "SpeedMeter"
+        private const val ONE_SECOND_NANOS = 1_000_000_000L
     }
 
-    private var updates = AtomicInteger(0)
-    private var timeInSec = AtomicReference(0.0)
-    private var prev = AtomicReference(System.nanoTime())
+    private var updates = 0L
+    private var timePassed = 0L
+    private var prev = System.nanoTime()
 
     fun update() {
-        updates.incrementAndGet()
-        val now = System.nanoTime()
-        val deltaTime = System.nanoTime() - prev.get()
-        prev.set(now)
-        timeInSec.getAndUpdate { it + deltaTime  }
-        if (timeInSec.get() > 1000000000) {
-            println("$TAG: $label: ${updates.get()}")
-            updates.set(0)
-            timeInSec.set(0.0)
-        }
-    }
+        synchronized(this) {
+            updates++
+            val now = System.nanoTime()
+            val deltaTime = now - prev
+            prev = now
+            timePassed += deltaTime
 
-    fun stop() {
-        scope.cancel("SpeedMeter is stopped")
+            if (timePassed >= ONE_SECOND_NANOS) {
+                println("$TAG: $label: $updates")
+                updates = 0L
+                timePassed = 0L
+            }
+        }
     }
 }

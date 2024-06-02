@@ -10,7 +10,7 @@ afterEvaluate {
             create<MavenPublication>("release") {
                 artifactId = "webrtc-media"
                 groupId = "online.desidev"
-                version = "1.0.2"
+                version = "2.1.0"
                 from(components["release"])
             }
         }
@@ -23,7 +23,6 @@ android {
 
     defaultConfig {
         minSdk = 24
-
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
     }
@@ -63,12 +62,14 @@ dependencies {
     implementation(libs.androidx.appcompat)
     implementation(libs.material)
 
-    implementation("online.desidev:kotlinutils:1.0.0")
+    implementation(libs.kotlinutils)
+
+    implementation(project(":utility"))
+    compileOnly(files("libs/yuv.aar"))
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.foundation)
 
-    implementation(project(":utility"))
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

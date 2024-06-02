@@ -3,11 +3,13 @@ package desidev.rtc.media.camera
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.ImageFormat
+import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.TotalCaptureResult
 import android.media.Image
 import android.media.ImageReader
 import android.media.MediaCodec
@@ -34,10 +36,11 @@ import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.core.content.ContextCompat
+import com.theeasiestway.yuv.YuvUtils
+import com.theeasiestway.yuv.entities.ArgbFrame
 import desidev.rtc.media.bitmappool.BitmapPool
 import desidev.rtc.media.bitmappool.BitmapWrapper
 import desidev.rtc.media.camera.CameraCapture.CameraState
-import desidev.utility.yuv.YuvToRgbConverter
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
@@ -62,6 +65,7 @@ import online.desidev.kotlinutils.ConditionLock
 import online.desidev.kotlinutils.ReentrantMutex
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlin.coroutines.suspendCoroutine
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -72,13 +76,12 @@ import kotlin.math.roundToInt
 class CameraCaptureImpl(context: Context) : CameraCapture {
     private val handlerThread = HandlerThread("CameraHandler").apply { start() }
     private val handler = Handler(handlerThread.looper)
-    private val yuvToRgbConverter = YuvToRgbConverter(context)
 
     private val scope = CoroutineScope(Dispatchers.Default + CoroutineExceptionHandler { _, e ->
         Log.e(TAG, "Exception in CameraCaptureImpl", e)
     })
 
-    private val mutex = ReentrantMutex()
+    private val mutex = ReentrantMutex(enableLogging = true, tag = TAG)
 
     private val _state = MutableStateFlow(CameraState.INACTIVE)
     override val state: StateFlow<CameraState> = _state
@@ -90,18 +93,27 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
         context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
 
     private val previewImageState: MutableStateFlow<BitmapWrapper?> = MutableStateFlow(null)
+
+    @Volatile
     private var previewImageReader: ImageReader? = null
+
+    @Volatile
     private var bitmapPool: BitmapPool? = null
+
+    @Volatile
     private var encoder: Encoder? = null
 
-    private val _selectedCamera =
-        MutableStateFlow(getAvailableCameras().run {
-            find { it.lensFacing == CameraLensFacing.FRONT } ?: first()
-        })
+    private val _selectedCamera = MutableStateFlow(getAvailableCameras().run {
+        find { it.lensFacing == CameraLensFacing.FRONT } ?: first()
+    })
     override val selectedCamera: StateFlow<CameraDeviceInfo> = _selectedCamera
     private val isCamOpenCond = ConditionLock(false)
     private val capSesOpenCond = ConditionLock(false)
+
+    @Volatile
     private var cameraDevice: CameraDevice? = null
+
+    @Volatile
     private var session: CameraCaptureSession? = null
     private val cameraQuality: CameraCapture.Quality = CameraCapture.Quality.Lowest
     private val displayRot: Int
@@ -121,19 +133,44 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
         }
     }
 
-    private fun getAvailableCameras() = cameraManager.cameraIdList.map { id ->
-        val characteristics = cameraManager.getCameraCharacteristics(id)
-        characteristics.get(CameraCharacteristics.LENS_FACING).run {
-            val lensFacing = when (this) {
-                CameraCharacteristics.LENS_FACING_BACK -> CameraLensFacing.BACK
-                CameraCharacteristics.LENS_FACING_FRONT -> CameraLensFacing.FRONT
-                CameraCharacteristics.LENS_FACING_EXTERNAL -> CameraLensFacing.EXTERNAL
-                else -> throw IllegalArgumentException("Unknown lens facing")
+    private fun getAvailableCameras(): List<CameraDeviceInfo> {
+        val cameraList = mutableListOf<CameraDeviceInfo>()
+        try {
+            val cameraIds = cameraManager.cameraIdList
+            for (id in cameraIds) {
+                val characteristics = cameraManager.getCameraCharacteristics(id)
+                val lensFacing = characteristics.get(CameraCharacteristics.LENS_FACING)
+                val cameraLensFacing = when (lensFacing) {
+                    CameraCharacteristics.LENS_FACING_BACK -> CameraLensFacing.BACK
+                    CameraCharacteristics.LENS_FACING_FRONT -> CameraLensFacing.FRONT
+                    CameraCharacteristics.LENS_FACING_EXTERNAL -> CameraLensFacing.EXTERNAL
+                    else -> {
+                        Log.e(TAG, "Unknown lens facing for camera id: $id")
+                        null
+                    }
+                }
+                cameraLensFacing?.let {
+                    cameraList.add(CameraDeviceInfo(id, it))
+                }
             }
-            CameraDeviceInfo(lensFacing, id)
+        } catch (e: SecurityException) {
+            Log.e(TAG, "Camera permission not granted", e)
+            // Handle the exception (e.g., request permissions, show a message to the user)
+        } catch (e: IllegalArgumentException) {
+            Log.e(TAG, "Failed to get camera characteristics", e)
+            // Handle the exception (e.g., show a message to the user)
+        } catch (e: CameraAccessException) {
+            Log.e(TAG, "Failed to access camera", e)
+            when (e.reason) {
+                CameraAccessException.CAMERA_DISABLED -> Log.e(TAG, "Camera disabled", e)
+                CameraAccessException.CAMERA_ERROR -> Log.e(TAG, "Camera error", e)
+                CameraAccessException.CAMERA_IN_USE -> Log.e(TAG, "Camera in use", e)
+                CameraAccessException.MAX_CAMERAS_IN_USE -> Log.e(TAG, "Max cameras in use", e)
+                CameraAccessException.CAMERA_DISCONNECTED -> Log.e(TAG, "Camera disconnected", e)
+            }
         }
+        return cameraList
     }
-
 
     private fun computeRelativeRotation(): Int {
         val cameraRot = getCurrentCameraOrientation()
@@ -142,8 +179,8 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
     }
 
     override suspend fun openCamera() {
-        mutex.withLock {
-            withContext(Dispatchers.IO) {
+        mutex.withLock("openCamera()") {
+            withContext(Dispatchers.Default) {
                 cameraDevice = openCameraDevice()
                 session = configSession(cameraDevice!!)
                 session?.createCaptureRequest()
@@ -152,77 +189,76 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
         }
     }
 
-
     override suspend fun closeCamera() {
-        mutex.withLock {
+        mutex.withLock("closeCamera") {
             if (state.value == CameraState.ACTIVE) {
-                if (isCaptureRunning.value) stopCapture()
-                session?.stopCaptureRequest()
-                session = null
                 cameraDevice?.close()
-                cameraDevice = null
                 isCamOpenCond.awaitFalse()
+                session = null
+                cameraDevice = null
 
-                handler.post {
-                    // release the image reader safely
-                    previewImageReader = previewImageReader?.let { reader ->
-                        reader.setOnImageAvailableListener(null, null)
-                        reader.close()
-                        null
-                    }
-                }
+                _state.value = CameraState.INACTIVE
 
+                previewImageReader?.close()
                 previewImageReader = null
-                previewImageState.apply {
-                    value?.bitmap?.recycle()
-                    value = null
-                }
+
+                val temp = previewImageState.value
+                previewImageState.value = null
+                temp?.release()
                 bitmapPool?.clear()
                 bitmapPool = null
-                _state.value = CameraState.INACTIVE
+
+                if (isCaptureRunning.value) stopCapture()
             }
         }
     }
 
-
     override suspend fun startCapture() {
-        mutex.withLock {
-            if (isCaptureRunning.value) return@withLock
+        mutex.withLock("startCapture()") {
+            if (isCaptureRunning.value) {
+                Log.i(TAG, "startCapture(): Already capturing.")
+                return@withLock
+            }
             if (state.value == CameraState.RELEASED) {
                 throw IllegalStateException("Camera is released")
             }
-
-            // if the camera is not opened, open it first
-            if (cameraDevice == null) {
-                cameraDevice = openCameraDevice()
+            if (state.value == CameraState.INACTIVE) {
+                openCamera()
             }
 
+            Log.i(TAG, "startCapture(): Starting Encoder.")
             encoder = Encoder()
             encoder?.start()
 
-            cameraDevice?.let {
-                session = configSession(it)
-                session?.createCaptureRequest()
-            }
-            _state.value = CameraState.ACTIVE
+            session = configSession(cameraDevice!!)
+            session?.createCaptureRequest()
+
             _isCaptureRunning.value = true
         }
     }
 
     override suspend fun stopCapture() {
-        mutex.withLock {
+        mutex.withLock("stopCapture()") {
             if (!isCaptureRunning.value) return@withLock
+
+            if (state.value == CameraState.ACTIVE) {
+                session?.stopCaptureRequest()
+                Log.d(TAG, "Stopped previous CaptureSession.")
+            }
+
             encoder?.stop()
             encoder = null
-            session?.close()
-            cameraDevice?.let {
-                session = configSession(it)
+
+            if (state.value == CameraState.ACTIVE) {
+                session = cameraDevice?.let { configSession(it) }
                 session?.createCaptureRequest()
+
+                Log.d(TAG, "Recreated CaptureSession")
             }
+
             _isCaptureRunning.value = false
         }
     }
-
 
     override suspend fun release() {
         mutex.withLock {
@@ -238,48 +274,67 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
         }
     }
 
-
     @SuppressLint("MissingPermission")
-    private suspend fun openCameraDevice(): CameraDevice = suspendCancellableCoroutine { cont ->
+    private suspend fun openCameraDevice(): CameraDevice {
         val cameraId = selectedCamera.value.id
         val (width, height) = selectSupportedSize(cameraId)
         setupPreview(width, height)
+        var resumed = false
+        return suspendCoroutine { cont ->
 
-        cameraManager.openCamera(
-            cameraId,
-            object : CameraDevice.StateCallback() {
+            val callback = object : CameraDevice.StateCallback() {
                 override fun onOpened(camera: CameraDevice) {
                     isCamOpenCond.set(true)
                     cont.resume(camera)
                 }
 
                 override fun onError(camera: CameraDevice, error: Int) {
+                    camera.close()
+                    cameraDevice = null
+                    isCamOpenCond.set(false)
+
                     val msg = when (error) {
-                        ERROR_CAMERA_DEVICE -> "Fatal (device)"
+                        ERROR_CAMERA_DEVICE -> {
+                            if (resumed) {
+                                scope.launch {
+                                    Log.d(TAG, "Retry to open camera")
+                                    cameraDevice = openCameraDevice()
+                                }
+                            }
+                            "Fatal (device)"
+                        }
+
                         ERROR_CAMERA_DISABLED -> "Device policy"
                         ERROR_CAMERA_IN_USE -> "Camera in use"
                         ERROR_CAMERA_SERVICE -> "Fatal (service)"
                         ERROR_MAX_CAMERAS_IN_USE -> "Maximum cameras in use"
                         else -> "Unknown"
                     }
+
                     val exc = RuntimeException("Camera $cameraId error: ($error) $msg")
-                    cont.resumeWithException(exc)
                     Log.e(TAG, exc.message, exc)
+
+                    if (!resumed) {
+                        cont.resumeWithException(exc)
+                    }
                 }
 
                 override fun onDisconnected(camera: CameraDevice) {
                     Log.d(TAG, "camera device ${camera.id} got disconnected")
                     isCamOpenCond.set(false)
-                    onCameraDisconnected(camera)
+                    onCameraDisconnect(camera)
                 }
 
                 override fun onClosed(camera: CameraDevice) {
                     isCamOpenCond.set(false)
                     Log.d(TAG, "camera device ${camera.id} is now closed")
                 }
-            },
-            handler
-        )
+            }
+
+            cameraManager.openCamera(cameraId, callback, handler)
+        }.also {
+            resumed = true
+        }
     }
 
     private fun selectSupportedSize(cameraId: String): Pair<Int, Int> {
@@ -288,8 +343,7 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
     }
 
     private fun getSupportedSize(
-        characteristics: CameraCharacteristics,
-        quality: CameraCapture.Quality
+        characteristics: CameraCharacteristics, quality: CameraCapture.Quality
     ): Pair<Int, Int> {
         return characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)?.run {
             val supportedSizes = getOutputSizes(ImageFormat.YUV_420_888)
@@ -301,18 +355,26 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
 
     private fun setupPreview(width: Int, height: Int) {
         bitmapPool = BitmapPool(dimen = Size(width, height), debug = false, tag = TAG)
+        val yuvUtils = YuvUtils()
         previewImageReader =
             ImageReader.newInstance(width, height, ImageFormat.YUV_420_888, 2).apply {
                 setOnImageAvailableListener({ imageReader ->
-                    imageReader.acquireLatestImage()?.let { image ->
-                        image.use {
-                            if (previewImageState.subscriptionCount.value > 0) {
-                                val bitmapWrapper = bitmapPool!!.getBitmap()
-                                yuvToRgbConverter.yuvToRgb(image, bitmapWrapper.bitmap)
-                                val old = previewImageState.getAndUpdate { bitmapWrapper }
-                                old?.release()
+                    try {
+                        imageReader.acquireLatestImage()?.let { image: Image ->
+                            image.use {
+                                if (previewImageState.subscriptionCount.value > 0) {
+                                    val yuvFrame = yuvUtils.convertToI420(image)
+                                    val argbFrame: ArgbFrame = yuvUtils.yuv420ToArgb(yuvFrame)
+                                    val bitmapWrapper = bitmapPool!!.getBitmap().apply {
+                                        bitmap.apply { copyPixelsFromBuffer(argbFrame.data) }
+                                    }
+                                    val old = previewImageState.getAndUpdate { bitmapWrapper }
+                                    old?.release()
+                                }
                             }
                         }
+                    } catch (ex: Exception) {
+                        ex.printStackTrace()
                     }
                 }, handler)
             }
@@ -326,8 +388,7 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
             }
 
             cameraDevice.createCaptureSession(
-                outputSurface,
-                object : CameraCaptureSession.StateCallback() {
+                outputSurface, object : CameraCaptureSession.StateCallback() {
                     override fun onConfigured(session: CameraCaptureSession) {
                         capSesOpenCond.set(true)
                         cont.resume(session)
@@ -339,23 +400,92 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
 
                     override fun onClosed(session: CameraCaptureSession) {
                         capSesOpenCond.set(false)
-                        Log.d(TAG, "CameraCaptureSession is now closed")
+                        Log.d(TAG, "CameraCaptureSession is now closed $session")
                     }
-                },
-                handler
+                }, handler
             )
         }
 
-
     private fun CameraCaptureSession.createCaptureRequest() {
+        val characteristics = cameraManager.getCameraCharacteristics(cameraDevice!!.id)
+        val aeCompensationRange =
+            characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
+        val isoRange = characteristics.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)
+        val faceDetectsMode =
+            characteristics.get(CameraCharacteristics.STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES)
+
         val captureRequest = cameraDevice?.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)?.run {
+
             set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(30, 30))
-            set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, 3)
+            set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, aeCompensationRange!!.upper)
+            set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+            isoRange?.let {
+                set(CaptureRequest.SENSOR_SENSITIVITY, it.upper)
+            }
+
+            faceDetectsMode?.let {
+                if (it.isNotEmpty()) {
+                    set(
+                        CaptureRequest.STATISTICS_FACE_DETECT_MODE,
+                        CameraCharacteristics.STATISTICS_FACE_DETECT_MODE_FULL
+                    )
+                }
+            }
+
+
+
             addTarget(previewImageReader!!.surface)
             encoder?.let { addTarget(it.inputSurface) }
             build()
         }
-        setRepeatingRequest(captureRequest!!, null, handler)
+
+        captureRequest?.run {
+            val aeLock = get(CaptureRequest.CONTROL_AE_LOCK)
+            Log.d(TAG, "aeLock: $aeLock")
+
+            val iso = get(CaptureRequest.SENSOR_SENSITIVITY)
+            Log.d(TAG, "iso: $iso")
+
+            val controlAeMode = get(CaptureRequest.CONTROL_AE_MODE)
+            val modeToString = when (controlAeMode) {
+                CaptureRequest.CONTROL_AE_MODE_ON -> "ON"
+                else -> "OFF"
+            }
+            Log.d(TAG, "controlAeMode: $modeToString")
+
+            val controlAfMode = get(CaptureRequest.CONTROL_AF_MODE)
+            val afModeToString = when (controlAfMode) {
+                CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE -> "CONTINUOUS_PICTURE"
+                CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO -> "CONTINUOUS_VIDEO"
+                CaptureRequest.CONTROL_AF_MODE_AUTO -> "AUTO"
+                CaptureRequest.CONTROL_AF_MODE_MACRO -> "MACRO"
+                CaptureRequest.CONTROL_AF_MODE_EDOF -> "EDOF"
+                else -> "OFF"
+            }
+
+            Log.d(TAG, "controlAfMode: $afModeToString")
+
+            val aeCompensation = get(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION)
+            Log.d(TAG, "aeCompensation: $aeCompensation")
+
+        }
+        Log.d(TAG, "aeCompensationRange: $aeCompensationRange")
+        Log.d(TAG, "isoRange: $isoRange")
+        Log.d(TAG, "faceDetectsMode: $faceDetectsMode")
+
+
+        val captureCallback = object : CameraCaptureSession.CaptureCallback() {
+            override fun onCaptureCompleted(
+                session: CameraCaptureSession,
+                request: CaptureRequest,
+                result: TotalCaptureResult
+            ) {
+
+            }
+        }
+
+
+        setRepeatingRequest(captureRequest!!, captureCallback, handler)
     }
 
     private suspend fun CameraCaptureSession.stopCaptureRequest() {
@@ -364,42 +494,34 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
             close()
             capSesOpenCond.awaitFalse()
         } catch (exc: Exception) {
-            Log.e(TAG, "Could not capture session correctly", exc)
+            Log.e(TAG, "Could not stop capture session correctly", exc)
         }
     }
 
-    private fun onCameraDisconnected(cameraDevice: CameraDevice) {
+    private fun onCameraDisconnect(cameraDevice: CameraDevice) {
         scope.launch {
             mutex.withLock {
                 _state.value = CameraState.INACTIVE
-                try {
-                    cameraDevice.close()
-                } catch (exc: Exception) {
-                    Log.e(TAG, exc.message, exc)
-                }
-                this@CameraCaptureImpl.cameraDevice = null
-                encoder?.stop()
-                encoder = null
-                try {
-                    session?.close()
-                } catch (exc: Exception) {
-                    Log.e(TAG, exc.message, exc)
-                }
+                session?.close()
                 session = null
+                cameraDevice.close()
+                if (isCaptureRunning.value) {
+                    _isCaptureRunning.value = false
+                    encoder?.stop()
+                    encoder = null
+                }
             }
         }
     }
 
     override fun getCameras(): List<CameraDeviceInfo> = getAvailableCameras()
 
-    override suspend fun selectCamera(info: CameraDeviceInfo) {
-        mutex.withLock {
+    override suspend fun switchCamera(info: CameraDeviceInfo) {
+        mutex.withLock("switchCamera()") {
             val wasActive = state.value == CameraState.ACTIVE
             val wasCapturing = isCaptureRunning.value
-            if (state.value == CameraState.ACTIVE) {
-                closeCamera()
-            }
 
+            closeCamera()
             _selectedCamera.value = info
 
             if (wasCapturing) {
@@ -423,8 +545,7 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
         encoder?.outputChannel ?: throw IllegalStateException("Encoder is not initialized")
 
     override fun getMediaFormat(): Deferred<MediaFormat> {
-        return encoder?.formatDeferred
-            ?: throw IllegalStateException("Encoder is not started yet")
+        return encoder?.formatDeferred ?: throw IllegalStateException("Encoder is not started yet")
     }
 
     @Composable
@@ -451,8 +572,7 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
                 }
 
                 val dstSize = IntSize(
-                    (image.width * scale).roundToInt(),
-                    (image.height * scale).roundToInt()
+                    (image.width * scale).roundToInt(), (image.height * scale).roundToInt()
                 )
 
                 val imageOffset = let {
@@ -478,13 +598,13 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
         }
     }
 
-
     private inner class Encoder {
-        lateinit var inputSurface: Surface
         val outputChannel: Channel<Pair<ByteArray, BufferInfo>> = Channel()
         val formatDeferred = CompletableDeferred<MediaFormat>()
-        private val scope = CoroutineScope(Dispatchers.Default)
+        private val encoderScope = CoroutineScope(Dispatchers.Default)
         private lateinit var mediaCodec: MediaCodec
+
+        lateinit var inputSurface: Surface
         fun start() {
             mediaCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
             val format = createFormat()
@@ -493,32 +613,115 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
             inputSurface = mediaCodec.createInputSurface()
             mediaCodec.start()
 
-            scope.launch {
+            encoderScope.launch {
                 var index: Int
                 while (isActive) {
-                    val info = BufferInfo()
-                    index = mediaCodec.dequeueOutputBuffer(info, 0)
-                    if (index >= 0) {
-                        processOutputBuffer(mediaCodec, index, info)
-                    } else if (index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                        formatDeferred.complete(mediaCodec.outputFormat.apply {
-                            setInteger(MediaFormat.KEY_ROTATION, computeRelativeRotation())
-                        })
+                    try {
+                        val info = BufferInfo()
+                        index = mediaCodec.dequeueOutputBuffer(info, 0)
+                        if (index >= 0) {
+                            processOutputBuffer(mediaCodec, index, info)
+                        } else if (index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                            formatDeferred.complete(mediaCodec.outputFormat.apply {
+                                setInteger(MediaFormat.KEY_ROTATION, computeRelativeRotation())
+                            })
+                        }
+                    } catch (_: IllegalStateException) {
+                        // ignore
                     }
                 }
             }
         }
 
-        private suspend fun processOutputBuffer(codec: MediaCodec, index: Int, info: BufferInfo) {
-            val compressedArray = codec.getOutputBuffer(index)!!.run {
-                val array = ByteArray(remaining())
-                get(array)
-                array
-            }
-
+        /*private suspend fun processInput(codec: MediaCodec) {
             try {
-                outputChannel.send(Pair(compressedArray, info))
+                if (inputBufferIndex == -1) {
+                    inputBufferIndex = codec.dequeueInputBuffer(0)
+                }
+                if (inputBufferIndex >= 0) {
+                    val yuv = inputChannel.receive()
+                    val dstImg = codec.getInputImage(inputBufferIndex)
+                    if (dstImg != null) {
+                        assert(dstImg.width == yuv.width && dstImg.height == yuv.height) { "size mismatch." }
+
+                        val copyTime = measureTime {
+                            coroutineScope {
+                                val dstY = dstImg.planes[0]
+                                for (i in 0 until dstImg.height) {
+                                    launch {
+                                        for (j in 0 until dstImg.width) {
+                                            val srcYIndex =
+                                                i * yuv.y.rowStride + j * yuv.y.pixelStride
+                                            val y = yuv.y.buffer.get(srcYIndex)
+
+                                            val dstYIndex =
+                                                i * dstY.rowStride + j * dstY.pixelStride
+                                            dstY.buffer.put(dstYIndex, y)
+                                        }
+                                    }
+                                }
+                                val dstU = dstImg.planes[1]
+                                val dstV = dstImg.planes[2]
+
+                                for (i in 0 until dstImg.height / 2) {
+                                    launch {
+                                        for (j in 0 until dstImg.width / 2) {
+                                            val srcIndex =
+                                                i * yuv.u.rowStride + j * yuv.u.pixelStride
+                                            val u = yuv.u.buffer.get(srcIndex)
+                                            val v = yuv.v.buffer.get(srcIndex)
+
+                                            val dstIndex = i * dstU.rowStride + j * dstU.pixelStride
+                                            dstU.buffer.put(dstIndex, u)
+                                            dstV.buffer.put(dstIndex, v)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Log.d(TAG, "copy time: $copyTime")
+
+                        val imageSize = dstImg.width * dstImg.height * 3 / 2
+                        codec.queueInputBuffer(
+                            inputBufferIndex,
+                            0,
+                            imageSize,
+                            yuv.timestampUs,
+                            0
+                        )
+                        inputBufferIndex = codec.dequeueInputBuffer(0)
+                    }
+                }
+
+            } catch (_: IllegalStateException) {
+            } catch (_: ClosedReceiveChannelException) {
+            }
+        }*/
+
+        private suspend fun processOutputBuffer(
+            codec: MediaCodec,
+            index: Int,
+            bufferInfo: BufferInfo
+        ) {
+            try {
+                val compressedArray = codec.getOutputBuffer(index)!!.run {
+                    val array = ByteArray(remaining())
+                    get(array)
+                    array
+                }
+
+                if (bufferInfo.flags == MediaCodec.BUFFER_FLAG_KEY_FRAME) {
+                    Log.i(
+                        TAG,
+                        "processOutputBuffer: produced keyframe size: ${compressedArray.size}"
+                    )
+                }
+
+                outputChannel.send(Pair(compressedArray, bufferInfo))
             } catch (ex: ClosedSendChannelException) {
+                // ignore
+            } catch (ex: IllegalStateException) {
                 // ignore
             }
 
@@ -527,14 +730,14 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
 
         suspend fun stop() {
             // Cancel all children coroutines and wait for them to complete
-            scope.coroutineContext[Job]?.apply {
+            encoderScope.coroutineContext[Job]?.apply {
                 cancelChildren()
                 children.toList().joinAll()
             }
 
             // Cancel the scope itself
             outputChannel.close()
-            scope.cancel()
+            encoderScope.cancel()
 
             if (!formatDeferred.isCompleted) {
                 formatDeferred.completeExceptionally(IllegalStateException("encoder is stopped"))
@@ -554,7 +757,8 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
         private fun createFormat(): MediaFormat {
             return MediaFormat.createVideoFormat(
                 MediaFormat.MIMETYPE_VIDEO_AVC,
-                previewImageReader!!.width, previewImageReader!!.height
+                previewImageReader!!.width,
+                previewImageReader!!.height
             ).apply {
                 setInteger(
                     MediaFormat.KEY_COLOR_FORMAT,
@@ -571,3 +775,22 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
         private const val TAG = "CameraCaptureImpl"
     }
 }
+
+/*
+class Yuv420Wrapper(
+    val y: PlaneWrapper,
+    val u: PlaneWrapper,
+    val v: PlaneWrapper,
+    val width: Int,
+    val height: Int,
+    val timestampUs: Long,
+)
+
+class PlaneWrapper(
+    val buffer: ByteBuffer,
+    val width: Int,
+    val height: Int,
+    val rowStride: Int,
+    val pixelStride: Int,
+)
+*/

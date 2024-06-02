@@ -6,6 +6,7 @@ import desidev.rtc.rtcmsg.RTCMessage.Control.StreamDisable
 import desidev.rtc.rtcmsg.RTCMessage.Control.StreamEnable
 import desidev.rtc.rtcmsg.RTCMessage.Control.StreamType
 import desidev.turnclient.ChannelBinding
+import desidev.turnclient.DataCallback
 import desidev.turnclient.ICECandidate
 import desidev.turnclient.ICECandidate.CandidateType
 import desidev.turnclient.TurnClient
@@ -27,11 +28,7 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import kotlin.time.measureTime
 
-class RTC : AutoCloseable {
-    companion object {
-        val TAG = RTC::class.simpleName
-    }
-
+class RTC {
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
     private val turn = TurnClient(
@@ -71,6 +68,26 @@ class RTC : AutoCloseable {
         remoteIce = iceCandidate
     }
 
+    suspend fun reset() {
+        turn.reset()
+        localIce = null
+        remoteIce = null
+        dataChannel = null
+
+        if (remoteAudioStreamFormat != null) {
+            remoteAudioStreamFormat = null
+            trackListener?.onAudioStreamDisable()
+        }
+        if (remoteVideoStreamFormat != null) {
+            remoteVideoStreamFormat = null
+            trackListener?.onVideoStreamDisable()
+        }
+
+        videoStmMutex.withLock { videoStmEnable = false }
+        audioStmMutex.withLock { audioStmEnable = false }
+    }
+
+
     suspend fun createPeerConnection() {
         conMutex.withLock {
             if (remoteIce == null || localIce == null) {
@@ -85,7 +102,8 @@ class RTC : AutoCloseable {
                     InetAddress.getByName(relay.ip)
                 }, relay.port
             )
-            val result = turn.createChannel(addressValue)
+
+            val result = turn.bindChannel(addressValue)
             if (result.isSuccess) {
                 dataChannel = result.getOrThrow()
                 startListeningChannel()
@@ -95,13 +113,89 @@ class RTC : AutoCloseable {
         }
     }
 
+
+    @OptIn(ExperimentalSerializationApi::class)
+    private fun startListeningChannel() {
+        dataChannel?.setDataCallback(object : DataCallback {
+            override fun onReceived(data: ByteArray) {
+                val rtcMessage = try {
+                    ProtoBuf.decodeFromByteArray<RTCMessage>(data)
+                } catch (ex: Exception) {
+                    Log.e(TAG, "Failed to decode RTCMessage, ${ex.message}")
+                    return
+                }
+                when {
+                    rtcMessage.control != null -> {
+                        val control = rtcMessage.control
+                        scope.launch { sendAck(control.txId) }
+                        when {
+                            control.streamEnable != null -> {
+                                val streamEnable = control.streamEnable
+                                if (streamEnable.type == StreamType.Video) {
+
+                                    if (remoteVideoStreamFormat != null) {
+                                        if (remoteVideoStreamFormat != streamEnable.format) {
+                                            // remote video stream format has updated
+                                            trackListener?.onVideoStreamDisable()
+                                            trackListener?.onVideoStreamAvailable(streamEnable.format)
+                                        }
+                                    } else {
+                                        trackListener?.onVideoStreamAvailable(streamEnable.format)
+                                        remoteVideoStreamFormat = streamEnable.format
+                                    }
+
+                                } else if (streamEnable.type == StreamType.Audio) {
+
+                                    if (remoteAudioStreamFormat != null) {
+                                        if (remoteAudioStreamFormat != streamEnable.format) {
+                                            // remote audio stream format has updated
+                                            trackListener?.onAudioStreamDisable()
+                                            trackListener?.onAudioStreamAvailable(streamEnable.format)
+                                        }
+                                    } else {
+                                        trackListener?.onAudioStreamAvailable(streamEnable.format)
+                                        remoteAudioStreamFormat = streamEnable.format
+                                    }
+
+                                }
+                            }
+                            control.streamDisable != null -> {
+                                val streamDisable = control.streamDisable
+                                val type = streamDisable.streamType
+                                if (type == StreamType.Video) {
+                                    remoteVideoStreamFormat = null
+                                    trackListener?.onVideoStreamDisable()
+                                } else if (type == StreamType.Audio) {
+                                    remoteAudioStreamFormat = null
+                                    trackListener?.onAudioStreamDisable()
+                                }
+                            }
+                        }
+                    }
+
+                    rtcMessage.acknowledge != null -> {
+                        acknowledgement.acknowledge(rtcMessage.acknowledge)
+                    }
+
+                    rtcMessage.audioSample != null -> {
+                        trackListener?.onNextAudioSample(rtcMessage.audioSample)
+                    }
+
+                    rtcMessage.videoSample != null -> {
+                        trackListener?.onNextVideoSample(rtcMessage.videoSample)
+                    }
+                }
+            }
+        })
+    }
+
     suspend fun closePeerConnection() {
         withContext(NonCancellable) {
             conMutex.withLock {
-                turn.deleteAllocation()
-                localIce = null
                 remoteIce = null
+                dataChannel?.close()
                 dataChannel = null
+
                 if (remoteAudioStreamFormat != null) {
                     remoteAudioStreamFormat = null
                     trackListener?.onAudioStreamDisable()
@@ -118,10 +212,6 @@ class RTC : AutoCloseable {
     }
 
     suspend fun isPeerConnectionExist(): Boolean = conMutex.withLock { dataChannel != null }
-
-    fun clearRemoteIce() {
-        remoteIce = null
-    }
 
     fun setTrackListener(trackListener: TrackListener) {
         this.trackListener = trackListener
@@ -202,68 +292,6 @@ class RTC : AutoCloseable {
     }
 
 
-    @OptIn(ExperimentalSerializationApi::class)
-    private fun startListeningChannel() {
-        dataChannel?.receiveMessage {
-            val rtcMessage = try {
-                ProtoBuf.decodeFromByteArray<RTCMessage>(it)
-            } catch (ex: Exception) {
-                Log.e(TAG, "Failed to decode RTCMessage, ${ex.message}")
-                return@receiveMessage
-            }
-
-//            Log.d(TAG, "Received RTCMessage: $rtcMessage")
-
-            when {
-                rtcMessage.control != null -> {
-                    val control = rtcMessage.control
-                    scope.launch { sendAck(control.txId) }
-                    when {
-                        control.streamEnable != null -> {
-                            val streamEnable = control.streamEnable
-                            if (streamEnable.type == StreamType.Video) {
-                                if (remoteVideoStreamFormat == null) {
-                                    trackListener?.onVideoStreamAvailable(streamEnable.format)
-                                    remoteVideoStreamFormat = streamEnable.format
-                                }
-                            } else if (streamEnable.type == StreamType.Audio) {
-                                if (remoteAudioStreamFormat == null) {
-                                    trackListener?.onAudioStreamAvailable(streamEnable.format)
-                                    remoteAudioStreamFormat = streamEnable.format
-                                }
-                            }
-                        }
-
-                        control.streamDisable != null -> {
-                            val streamDisable = control.streamDisable
-                            val type = streamDisable.streamType
-                            if (type == StreamType.Video) {
-                                remoteVideoStreamFormat = null
-                                trackListener?.onVideoStreamDisable()
-                            } else if (type == StreamType.Audio) {
-                                remoteAudioStreamFormat = null
-                                trackListener?.onAudioStreamDisable()
-                            }
-                        }
-                    }
-                }
-
-                rtcMessage.acknowledge != null -> {
-                    acknowledgement.acknowledge(rtcMessage.acknowledge)
-                }
-
-                rtcMessage.audioSample != null -> {
-                    trackListener?.onNextAudioSample(rtcMessage.audioSample)
-                }
-
-                rtcMessage.videoSample != null -> {
-                    trackListener?.onNextVideoSample(rtcMessage.videoSample)
-                }
-            }
-        }
-    }
-
-
     private suspend fun sendControlMessage(control: RTCMessage.Control) {
         val message = RTCMessage(control = control)
         val timeToSend = measureTime {
@@ -281,7 +309,7 @@ class RTC : AutoCloseable {
     private suspend fun sendMessage(message: RTCMessage) {
         withContext(Dispatchers.IO) {
             val bytes = ProtoBuf.encodeToByteArray(message)
-            dataChannel?.sendMessage(bytes)
+            dataChannel?.sendData(bytes)
         }
     }
 
@@ -292,7 +320,7 @@ class RTC : AutoCloseable {
         }
     }
 
-    override fun close() {
+    fun close() {
         scope.coroutineContext.cancelChildren()
         scope.launch {
             withContext(NonCancellable) {
@@ -304,8 +332,14 @@ class RTC : AutoCloseable {
                         Log.e(TAG, "Failed to close peer connection, ${ex.message}")
                     }
                 }
+
+                turn.deleteAllocation()
             }
         }
         scope.cancel()
+    }
+
+    companion object {
+        val TAG = RTC::class.simpleName
     }
 }

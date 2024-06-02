@@ -9,7 +9,7 @@ import desidev.turnclient.message.Message.Companion.generateTransactionId
 import desidev.turnclient.util.generateHashCode
 
 class StunRequestBuilder {
-    private lateinit var transactionId: ByteArray
+    private lateinit var txBytes: ByteArray
     private var requestUpdated = true
     private val stunAttributes = mutableSetOf<StunAttribute>()
 
@@ -97,7 +97,7 @@ class StunRequestBuilder {
 
     fun build(): Message {
         if (requestUpdated) {
-            transactionId = generateTransactionId()
+            txBytes = generateTransactionId()
             message = null
         } else {
             return message!!
@@ -176,7 +176,12 @@ class StunRequestBuilder {
             }
         }
         val messageLength = attributes.sizeInBytes()
-        var header = MessageHeader(messageType.type, transactionId, MAGIC_COCKIE, messageLength)
+        var header = MessageHeader(
+            messageType.type,
+            MessageHeader.TransactionId(txBytes),
+            MAGIC_COCKIE,
+            messageLength
+        )
 
         if (realm != null && username != null && password != null) {
             header = header.copy(msgLen = messageLength + 24)

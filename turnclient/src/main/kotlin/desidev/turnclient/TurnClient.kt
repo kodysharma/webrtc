@@ -5,21 +5,20 @@ import desidev.turnclient.attribute.AttributeType
 import desidev.turnclient.attribute.TransportProtocol
 import desidev.turnclient.message.Message
 import desidev.turnclient.message.MessageClass
+import desidev.turnclient.message.MessageHeader
 import desidev.turnclient.message.MessageType
 import desidev.turnclient.message.StunRequestBuilder
 import desidev.turnclient.util.NumberSeqGenerator
-import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.ObsoleteCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.ticker
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import online.desidev.kotlinutils.ReentrantMutex
 import java.io.IOException
@@ -31,9 +30,8 @@ import java.net.SocketException
 import java.net.SocketTimeoutException
 import java.nio.ByteBuffer
 import java.util.Collections
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
@@ -42,24 +40,23 @@ class TurnClient(
     private val username: String,
     private val password: String
 ) {
-    private val scope = CoroutineScope(Dispatchers.Unconfined + SupervisorJob())
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val mutex = ReentrantMutex()
     private var allocation: Allocation? = null
-    private val bindingChannels = mutableSetOf<ChannelBinding>()
+    private val dataChannels = mutableSetOf<DataChannel>()
 
     private var socketHandler: SocketHandler? = null
     private val numberSeqGenerator = NumberSeqGenerator(0x4000..0x7FFF)
 
     private var nonce: String? = null
     private var realm: String? = null
-    private val keepAliveTime = 15.seconds
-    private var refreshJob: Job? = null
 
     private val allocateRequestBuilder = StunRequestBuilder().apply {
         setMessageType(MessageType.ALLOCATE_REQUEST)
         setUsername(username)
         setPassword(password)
     }
+
     private val bindingRequestBuilder = StunRequestBuilder().apply {
         setMessageType(MessageType.CHANNEL_BIND_REQ)
         setUsername(username)
@@ -72,24 +69,27 @@ class TurnClient(
         setPassword(password)
     }
 
-    /**
-     * this call is non cancellable
-     */
+
+    init {
+        expiryTimer()
+        keepRefreshing()
+    }
+
     suspend fun createAllocation(): Result<List<ICECandidate>> {
-        if (allocation != null) {
-            return Result.success(allocation!!.iceCandidates)
-        }
         return mutex.withLock {
             withContext(NonCancellable) {
                 try {
                     socketHandler = socketHandler ?: SocketHandler().apply { start() }
-                    val allocateRequest =
-                        allocateRequestBuilder.setNonce(nonce).setRealm(realm).build()
-                    val response = socketHandler!!.sendMessage(allocateRequest)
+                    val allocateRequest = allocateRequestBuilder
+                        .setNonce(nonce)
+                        .setRealm(realm)
+                        .build()
+
+                    val response = socketHandler!!.sendRequest(allocateRequest)
                     if (response.msgClass == MessageClass.SUCCESS_RESPONSE) {
                         allocation = parseAllocationResult(response)
                         Result.success(allocation!!.iceCandidates)
-                            .also { refreshJob = startRefreshJob() }
+
                     } else {
                         val errorAttr =
                             response.attributes.find { it.type == AttributeType.ERROR_CODE.type }
@@ -135,7 +135,7 @@ class TurnClient(
         }
     }
 
-    suspend fun createChannel(peerAddress: AddressValue): Result<ChannelBinding> =
+    suspend fun bindChannel(peerAddress: AddressValue): Result<ChannelBinding> =
         withContext(NonCancellable) {
             mutex.withLock {
                 try {
@@ -143,20 +143,23 @@ class TurnClient(
                         throw IllegalStateException("Cannot add peer address before creating an allocation. Please create an allocation first.")
                     }
 
-                    val channelNumber = numberSeqGenerator.next()
-                    val channelBind = bindingRequestBuilder
-                        .setChannelNumber(channelNumber)
-                        .setPeerAddress(peerAddress)
-                        .setNonce(nonce)
-                        .setRealm(realm)
-                        .build()
+                    val channel = dataChannels.find { it.peerAddress == peerAddress }
+                    if (channel != null) {
+                        channel.isClosed = false
+                        return@withLock Result.success(channel)
+                    }
 
-                    val response = socketHandler!!.sendMessage(channelBind)
+                    val channelNumber = numberSeqGenerator.next()
+                    val channelBind = bindingRequestBuilder.setChannelNumber(channelNumber)
+                        .setPeerAddress(peerAddress).setNonce(nonce).setRealm(realm).build()
+
+                    val response = socketHandler!!.sendRequest(channelBind)
 
                     when (response.msgClass) {
                         MessageClass.SUCCESS_RESPONSE -> {
-                            bindingChannels.add(ChannelBindingImpl(peerAddress, channelNumber))
-                            Result.success(ChannelBindingImpl(peerAddress, channelNumber))
+                            val dataChannel = DataChannel(peerAddress, channelNumber)
+                            dataChannels.add(dataChannel)
+                            Result.success(dataChannel)
                         }
 
                         MessageClass.ERROR_RESPONSE -> {
@@ -172,12 +175,12 @@ class TurnClient(
                                         response.attributes.find { it.type == AttributeType.NONCE.type }
                                             ?.getValueAsString()
                                     // retry
-                                    createChannel(peerAddress)
+                                    bindChannel(peerAddress)
                                 }
 
                                 // channel number is already bind to this peer
                                 400 -> {
-                                    Result.success(ChannelBindingImpl(peerAddress, channelNumber))
+                                    Result.success(DataChannel(peerAddress, channelNumber))
                                 }
 
                                 else -> {
@@ -197,17 +200,21 @@ class TurnClient(
             }
         }
 
-    private suspend fun refreshChannelBinding(channelBinding: ChannelBinding) {
+    private suspend fun refreshChannelBinding(channel: DataChannel) {
         mutex.withLock {
             if (allocation != null) {
                 withContext(NonCancellable) {
-                    val request = bindingRequestBuilder
-                        .setChannelNumber(channelBinding.channelNumber)
-                        .setPeerAddress(channelBinding.peerAddress)
+                    val request = bindingRequestBuilder.setChannelNumber(channel.channelNumber)
+                        .setPeerAddress(channel.peerAddress)
                         .setNonce(nonce)
                         .setRealm(realm)
                         .build()
-                    socketHandler!!.sendMessage(request)
+
+                    socketHandler?.sendRequest(request)?.let {
+                        if (it.msgClass == MessageClass.SUCCESS_RESPONSE) {
+                            channel.timeToExpiry = 5.minutes
+                        }
+                    }
                 }
             }
         }
@@ -216,51 +223,46 @@ class TurnClient(
     // this refreshes the allocation
     private suspend fun refresh(lifetime: Duration) {
         check(lifetime.inWholeSeconds >= 0) { "Lifetime should be eq/greater than 0" }
-        withContext(NonCancellable) {
-            mutex.withLock {
-                if (allocation != null) {
-                    val refreshRequest = refreshRequestBuilder.apply {
-                        setLifetime(lifetime.inWholeSeconds.toInt())
-                        setRealm(realm!!)
-                        setNonce(nonce!!)
-                    }.build()
-                    val response = socketHandler!!.sendMessage(refreshRequest)
-                    when (response.msgClass) {
-                        MessageClass.SUCCESS_RESPONSE -> {
-                            val lifetimeAttr =
-                                response.attributes.find { it.type == AttributeType.LIFETIME.type }
-                                    ?.getValueAsInt()
-                                    ?: throw RuntimeException("Lifetime not found in response")
+        mutex.withLock {
+            if (allocation != null) {
+                val refreshRequest = refreshRequestBuilder.apply {
+                    setLifetime(lifetime.inWholeSeconds.toInt())
+                    setRealm(realm!!)
+                    setNonce(nonce!!)
+                }.build()
+                val response = socketHandler!!.sendRequest(refreshRequest)
+                when (response.msgClass) {
+                    MessageClass.SUCCESS_RESPONSE -> {
+                        val lifetimeAttr =
+                            response.attributes.find { it.type == AttributeType.LIFETIME.type }
+                                ?.getValueAsInt()
+                                ?: throw RuntimeException("Lifetime not found in response")
 
-                            allocation = allocation?.copy(
-                                lifetime = lifetimeAttr.seconds,
-                                timestamp = System.currentTimeMillis()
-                            )
-                        }
+                        allocation?.timeToExpiry = lifetimeAttr.seconds
+                    }
 
-                        MessageClass.ERROR_RESPONSE -> {
-                            val errorValue =
-                                response.attributes.find { it.type == AttributeType.ERROR_CODE.type }
-                                    ?.getAsErrorValue()
-                                    ?: throw RuntimeException("Error code not found in response")
+                    MessageClass.ERROR_RESPONSE -> {
+                        val errorValue =
+                            response.attributes.find { it.type == AttributeType.ERROR_CODE.type }
+                                ?.getAsErrorValue()
+                                ?: throw RuntimeException("Error code not found in response")
 
-                            when (errorValue.code) {
-                                // stale nonce
-                                438 -> {
-                                    nonce =
-                                        response.attributes.find { it.type == AttributeType.NONCE.type }
-                                            ?.getValueAsString()
-                                    refresh(lifetime)
-                                }
+                        when (errorValue.code) {
+                            // stale nonce
+                            438 -> {
+                                nonce =
+                                    response.attributes.find { it.type == AttributeType.NONCE.type }
+                                        ?.getValueAsString()
+                                refresh(lifetime)
+                            }
 
-                                else -> {
-                                    throw IOException("Refresh failed with error code: $errorValue")
-                                }
+                            else -> {
+                                throw IOException("Refresh failed with error code: $errorValue")
                             }
                         }
-
-                        else -> throw IOException("Unknown error")
                     }
+
+                    else -> throw IOException("Unknown error")
                 }
             }
         }
@@ -268,101 +270,79 @@ class TurnClient(
 
     suspend fun deleteAllocation() {
         mutex.withLock {
-            refreshJob?.cancel()
-            refreshJob = null
             refresh(0.seconds)
             allocation = null
-            socketHandler?.cancel()
-            socketHandler = null
+
+            dataChannels.forEach { it.isClosed = true }
+            dataChannels.clear()
+
+            withContext(Dispatchers.IO) {
+                socketHandler?.cancel()
+                socketHandler?.join()
+                socketHandler = null
+            }
         }
     }
 
-    private fun startRefreshJob() = scope.launch(Dispatchers.IO) {
-        // start a job to refresh the allocation
-        launch {
+    suspend fun reset() {
+        mutex.withLock {
+            allocation = null
+            withContext(Dispatchers.IO) {
+                socketHandler?.cancel()
+                socketHandler?.join()
+                socketHandler = null
+            }
+        }
+    }
+
+
+    @OptIn(ObsoleteCoroutinesApi::class)
+    private fun expiryTimer() {
+        val ticker = ticker(1000, 1000)
+        scope.launch {
+            while (isActive) {
+                ticker.receive()
+                if (allocation == null) continue
+
+                allocation?.let {
+                    it.timeToExpiry -= 1.seconds
+                    if (it.isExpired()) {
+                        dataChannels.forEach { dataChannel -> dataChannel.close() }
+                        dataChannels.clear()
+                    }
+                }
+
+                dataChannels.forEach { it.timeToExpiry -= 1.seconds }
+                dataChannels.removeAll { it.isExpired() }
+            }
+        }.invokeOnCompletion { ticker.cancel() }
+    }
+
+    private fun keepRefreshing() {
+        scope.launch {
             while (isActive) {
                 delay(1.seconds)
-                allocation!!.apply {
-                    lifetime -= 1.seconds
-                }
-                if (allocation!!.lifetime < 2.minutes) {
-                    try {
+                if (allocation == null) continue
+
+                mutex.withLock {
+                    if (allocation!!.timeToExpiry < 1.minutes) {
                         refresh(10.minutes)
-                    } catch (ex: Exception) {
-                        ex.printStackTrace()
+                    }
+                    if (dataChannels.isNotEmpty()) {
+                        dataChannels
+                            .filter { !it.isClosed }
+                            .forEach {
+                                if (it.timeToExpiry < 1.minutes) {
+                                    try {
+                                        refreshChannelBinding(it)
+                                    } catch (ex: Exception) {
+                                        ex.printStackTrace()
+                                    }
+                                }
+                            }
                     }
                 }
             }
-        }
-
-        // start a job to refresh the permissions/channels bindings
-        launch {
-            while (isActive) {
-                delay(3.minutes)
-                bindingChannels.forEach {
-                    launch {
-                        try {
-                            refreshChannelBinding(it)
-                        } catch (ex: Exception) {
-                            ex.printStackTrace()
-                        }
-                    }
-                }
-            }
-        }
-
-        // a child job to send keep alive messages
-        launch {
-            while (isActive) {
-                delay(keepAliveTime)
-                socketHandler!!.sendKeepAlive()
-            }
-        }
-    }
-
-    inner class ChannelBindingImpl(
-        override val peerAddress: AddressValue,
-        override val channelNumber: Int
-    ) : ChannelBinding {
-        override val timestamp: Long = System.currentTimeMillis()
-        override fun sendMessage(bytes: ByteArray) {
-            sendChannelData(channelNumber, bytes)
-        }
-
-        override fun receiveMessage(cb: IncomingMessage) {
-            socketHandler!!.dataMessageListener[channelNumber] = cb
-        }
-
-        private fun sendChannelData(channelNo: Int, data: ByteArray) {
-            val channelData = ByteBuffer.allocate(4 + data.size)
-            channelData.putShort(channelNo.toShort()) // 2 bytes channel number
-            channelData.putShort(data.size.toShort()) // 2 bytes data length
-            channelData.put(data) // application data
-
-            val packet = DatagramPacket(channelData.array(), channelData.capacity())
-            try {
-                socketHandler!!.sendPacket(packet)
-            } catch (ex: Exception) {
-                ex.printStackTrace()
-            }
-        }
-
-        override fun equals(other: Any?): Boolean {
-            if (this === other) return true
-            if (javaClass != other?.javaClass) return false
-            other as ChannelBindingImpl
-            if (peerAddress != other.peerAddress) return false
-            return channelNumber == other.channelNumber
-        }
-
-        override fun hashCode(): Int {
-            var result = peerAddress.hashCode()
-            result = 31 * result + channelNumber
-            return result
-        }
-
-        override fun toString(): String {
-            return "ChannelBindingImpl(peerAddress=$peerAddress, channelNumber=$channelNumber)"
         }
     }
 
@@ -391,53 +371,95 @@ class TurnClient(
                 type = ICECandidate.CandidateType.RELAY,
                 protocol = TransportProtocol.UDP,
                 priority = 3
-            ),
-            ICECandidate(
+            ), ICECandidate(
                 ip = InetAddress.getByAddress(xorMappedAddr.address).hostAddress,
                 port = xorMappedAddr.port,
                 type = ICECandidate.CandidateType.SRFLX,
                 protocol = TransportProtocol.UDP,
                 priority = 2
+            ), ICECandidate(
+                ip = InetAddress.getLoopbackAddress().hostAddress,
+                port = socketHandler!!.localPort,
+                type = ICECandidate.CandidateType.HOST,
+                protocol = TransportProtocol.UDP,
+                priority = 1
             )
-
         )
-        return Allocation(System.currentTimeMillis(), lifetime.seconds, candidates)
+
+        return Allocation(lifetime.seconds, candidates)
+    }
+
+    private inner class DataChannel(
+        override val peerAddress: AddressValue,
+        override val channelNumber: Int,
+    ) : ChannelBinding {
+
+        private var dataCallback: DataCallback? = null
+        var isClosed: Boolean = false
+            set(value) = synchronized(this) { field = value }
+            get() = synchronized(this) { field }
+
+        var timeToExpiry = 5.minutes
+            get() = synchronized(this) { field }
+            set(value) = synchronized(this) { field = value }
+
+        fun isExpired() = timeToExpiry <= 0.seconds
+        override fun sendData(bytes: ByteArray) = synchronized(this) {
+            if (!isClosed) {
+                sendChannelData(channelNumber, bytes)
+            }
+        }
+
+        fun onDataReceived(data: ByteArray) {
+            if (!isClosed) {
+                dataCallback?.onReceived(data)
+            }
+        }
+
+        override fun setDataCallback(callback: DataCallback) {
+            this.dataCallback = callback
+        }
+
+        override fun close() {
+            isClosed = true
+            dataCallback = null
+        }
+
+        private fun sendChannelData(channelNo: Int, data: ByteArray) {
+            val channelData = ByteBuffer.allocate(4 + data.size)
+            channelData.putShort(channelNo.toShort()) // 2 bytes channel number
+            channelData.putShort(data.size.toShort()) // 2 bytes data length
+            channelData.put(data) // application data
+
+            val packet = DatagramPacket(channelData.array(), channelData.capacity())
+            try {
+                socketHandler!!.sendPacket(packet)
+            } catch (ex: Exception) {
+                ex.printStackTrace()
+            }
+        }
+
+        override fun toString(): String {
+            return "ChannelBindingImpl(peerAddress=$peerAddress, channelNumber=$channelNumber)"
+        }
     }
 
     private abstract class ResponseCallback {
-        var registeredAt: Long =
-            0                  // the timestamp of the callback registration. Used to clean up on timed out.
-        abstract val timeout: Int                   // timeout value for response.
-        abstract val transactionId: String          // transaction id on which this callback is registered.
         abstract fun onResponse(response: Message)
         abstract fun onTimeout()
     }
 
     private inner class SocketHandler : Thread() {
-        val dataMessageListener: MutableMap<Int, IncomingMessage> =
-            Collections.synchronizedMap(HashMap())
-
-        private val socketReceiveTimeout: Int = 136
         private var running = false
         private val buffer = ByteArray(65000)
         private val socket: DatagramSocket = DatagramSocket()
 
-        // A map of response callbacks
-        private val resCb: MutableMap<String, ResponseCallback> =
+        private val callbackRegistry: MutableMap<MessageHeader.TransactionId, ResponseCallback> =
             Collections.synchronizedMap(HashMap())
-
-        fun registerOnTransaction(responseCallback: ResponseCallback) {
-            responseCallback.registeredAt = System.currentTimeMillis()
-            this.resCb[responseCallback.transactionId] = responseCallback
-        }
-
-        fun unregisterOnTransaction(responseCallback: ResponseCallback) {
-            resCb.remove(responseCallback.transactionId)
-        }
+        val localPort get() = socket.localPort
 
         override fun run() {
             running = true
-            socket.soTimeout = socketReceiveTimeout
             while (running) {
                 // receive incoming data from socket
                 try {
@@ -448,99 +470,98 @@ class TurnClient(
 
                     dispatchMessage(receivedData)
 
-                } catch (_: SocketException) {
-                    // Todo: handle socket exception
-                } catch (_: SocketTimeoutException) {
-                    // Todo: handle socket timeout
+                } catch (ex: SocketException) {
+                    ex.printStackTrace()
+                } catch (ex: SocketTimeoutException) {
+                    ex.printStackTrace()
                 }
-
-                // Check for a timed-out responseCallback and remove it.
-                removeCallbacksOnTimeout()
             }
         }
 
-        @OptIn(ExperimentalStdlibApi::class)
         private fun dispatchMessage(byteArray: ByteArray) {
-            val type = (byteArray[0].toInt() shl 8) or byteArray[1].toInt()
-
-            if (type in 0x4000..0x7FFF) {
-                dataMessageListener[type]?.invoke(byteArray.copyOfRange(4, byteArray.size))
-                return
-            }
-
-            val message = Message.parse(byteArray)
-            val header = message.header
-
-            val msgClass = header.msgType and 0x0110u
-            if (msgClass == MessageClass.SUCCESS_RESPONSE.type || msgClass == MessageClass.ERROR_RESPONSE.type) {
-
-                println("<Response>")
-                println(message)
-                println("</Response>\n")
-
-                val cb = resCb.remove(header.txId.toHexString())
-                cb?.onResponse(message)
-                if (cb == null) {
-                    System.err.println("No response callback found for transaction id: ${header.txId.toHexString()}")
+            try {
+                val type = (byteArray[0].toInt() shl 8) or byteArray[1].toInt()
+                if (type in 0x4000..0x7FFF) {
+                    dataChannels.find { it.channelNumber == type }
+                        ?.onDataReceived(byteArray.copyOfRange(4, byteArray.size))
+                    return
                 }
-            } else if (msgClass == MessageClass.INDICATION.type) {
+
+                val message = Message.parse(byteArray)
+                val header = message.header
+
+                val msgClass = header.msgType and 0x0110u
+                if (msgClass == MessageClass.SUCCESS_RESPONSE.type || msgClass == MessageClass.ERROR_RESPONSE.type) {
+                    val cb = callbackRegistry[header.txId]
+                    cb?.onResponse(message)
+                    if (cb == null) {
+                        System.err.println("No response callback found for transaction id: ${header.txId}")
+                    }
+                }
+            } catch (ex: Exception) {
+                ex.printStackTrace()
             }
         }
 
-        fun removeCallbacksOnTimeout() {
-            val toRemove = mutableListOf<ResponseCallback>()
-            val currentTime = System.currentTimeMillis()
+        suspend fun sendRequest(message: Message, resendInterval: Long = RESEND_INTERVAL): Message {
+            assert((message.header.msgType and Message.MESSAGE_CLASS_MASK).toInt() == 0) { "Message does not describe a stun/turn request." }
 
-            this.resCb.forEach { entry ->
-                if (currentTime - entry.value.registeredAt > entry.value.timeout) {
-                    toRemove.add(entry.value)
+            val messageTxId = message.header.txId
+            val responseDeferred = CompletableDeferred<Message>()
+            val messageCallback = object : ResponseCallback() {
+                override fun onResponse(response: Message) {
+                    responseDeferred.complete(response)
+                    println(
+                        "onResponse ***************************** " +
+                                "\n $response \n"
+                    )
+                }
+
+                override fun onTimeout() {
+                    responseDeferred.completeExceptionally(IOException("request timeout on tx: $messageTxId"))
                 }
             }
 
-            toRemove.forEach { entry ->
-                resCb.remove(entry.transactionId)
-                entry.onTimeout()
+            scope.launch {
+                var timeout = REQUEST_TIMEOUT.seconds
+                var prev = System.currentTimeMillis()
+
+                callbackRegistry[messageTxId] = messageCallback
+                while (!responseDeferred.isCompleted) {
+                    val now = System.currentTimeMillis()
+                    timeout -= (now - prev).milliseconds
+                    prev = now
+
+                    if (timeout <= 0.seconds) {
+                        messageCallback.onTimeout()
+                        break
+                    }
+                    try {
+                        println(
+                            "Request sent: ******************************" +
+                                    "\n$message \n"
+                        )
+                        sendReqMessage(message)
+                    } catch (ex: Exception) {
+                        ex.printStackTrace()
+                    }
+
+                    delay(resendInterval)
+                }
+                callbackRegistry.remove(messageTxId)
             }
+
+            return responseDeferred.await()
         }
 
-        fun sendReqMessage(message: Message, resCb: ResponseCallback) {
+        private fun sendReqMessage(message: Message) {
             val header = message.header
             val messageClass: UShort = header.msgType and Message.MESSAGE_CLASS_MASK
             if (messageClass == MessageClass.REQUEST.type) {
                 val packet = message.encodeToByteArray().let { DatagramPacket(it, it.size) }
-                socketHandler?.registerOnTransaction(resCb)
                 sendPacket(packet)
-
-                println("<Request>")
-                println(message)
-                println("</Request> \n")
-
             } else {
                 throw IllegalArgumentException("This function only accepts Request Messages")
-            }
-        }
-
-        @OptIn(ExperimentalStdlibApi::class)
-        suspend fun sendMessage(message: Message): Message {
-            return withContext(Dispatchers.IO) {
-                suspendCancellableCoroutine { cont ->
-                    val callback = object : ResponseCallback() {
-                        override val timeout: Int = REQUEST_TIMEOUT
-                        override val transactionId: String = message.header.txId.toHexString()
-
-                        override fun onResponse(response: Message) {
-                            cont.resume(response)
-                        }
-
-                        override fun onTimeout() {
-                            cont.resumeWithException(IOException("Request timed out"))
-                        }
-                    }
-                    sendReqMessage(message, callback)
-                    cont.invokeOnCancellation {
-                        unregisterOnTransaction(callback)
-                    }
-                }
             }
         }
 
@@ -567,11 +588,19 @@ class TurnClient(
         }
     }
 
-    data class Allocation(
-        val timestamp: Long, var lifetime: Duration, val iceCandidates: List<ICECandidate>
-    )
+    class Allocation(
+        lifetime: Duration,
+        val iceCandidates: List<ICECandidate>
+    ) {
+        var timeToExpiry = lifetime
+            get() = synchronized(this) { field }
+            set(value) = synchronized(this) { field = value }
+
+        fun isExpired() = timeToExpiry <= 1.seconds
+    }
 
     companion object {
-        const val REQUEST_TIMEOUT = 15000 // 15 seconds
+        const val REQUEST_TIMEOUT = 15000L // 15 seconds
+        const val RESEND_INTERVAL = 5000L // 5 seconds
     }
 }

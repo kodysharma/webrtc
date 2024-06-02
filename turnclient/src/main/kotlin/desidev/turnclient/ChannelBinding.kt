@@ -2,12 +2,16 @@ package desidev.turnclient
 
 import desidev.turnclient.attribute.AddressValue
 
-typealias IncomingMessage = (ByteArray) -> Unit
+
+interface DataCallback {
+    fun onReceived(data: ByteArray)
+}
 
 interface ChannelBinding {
     val peerAddress: AddressValue
     val channelNumber: Int
-    val timestamp : Long
-    fun sendMessage(bytes: ByteArray)
-    fun receiveMessage(cb: IncomingMessage)
+    fun sendData(bytes: ByteArray)
+    fun setDataCallback(callback: DataCallback)
+    fun close()
+
 }

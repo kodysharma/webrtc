@@ -85,7 +85,6 @@ class VoiceRecorder private constructor(
         }
         _audioRecord.release()
         _scope.cancel("VoiceRecorder is released")
-        speedMeter.stop()
     }
 
 
