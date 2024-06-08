@@ -13,5 +13,4 @@ interface ChannelBinding {
     fun sendData(bytes: ByteArray)
     fun setDataCallback(callback: DataCallback)
     fun close()
-
 }

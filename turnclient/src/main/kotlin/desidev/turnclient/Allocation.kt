@@ -1,10 +1,11 @@
 package desidev.turnclient
 
-import desidev.turnclient.attribute.AddressValue
-import desidev.turnclient.attribute.TransportProtocol
+import kotlin.time.Duration
 
-data class Allocation(
-    val relayedAddress: AddressValue,  // allocated ip:port by the turn server
-    val mappedAddress: AddressValue,   // public ip:port address
-    val protocol: TransportProtocol    // transport protocol between the relayed transport address and peers.
-)
+
+class Allocation(
+    lifetime: Duration,
+    val iceCandidates: List<ICECandidate>
+) : ExpireAble by ExpireAbleImpl(lifetime)
+
+

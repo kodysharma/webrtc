@@ -155,10 +155,17 @@ class StunRequestBuilder {
                             peerAddress!!.xorAddress()
                         )
                     )
-                    add(StunAttribute.createStunAttribute(AttributeType.USERNAME.type, username!!))
 
-                    add(StunAttribute.createStunAttribute(AttributeType.REALM.type, realm!!))
-                    add(StunAttribute.createStunAttribute(AttributeType.NONCE.type, nonce!!))
+                    username?.let {
+                        add(StunAttribute.createStunAttribute(AttributeType.USERNAME.type, it))
+                    }
+
+                    realm?.let {
+                        add(StunAttribute.createStunAttribute(AttributeType.REALM.type, it))
+                    }
+                    nonce?.let {
+                        add(StunAttribute.createStunAttribute(AttributeType.NONCE.type, it))
+                    }
                 }
             }
 
@@ -166,8 +173,12 @@ class StunRequestBuilder {
                 attributes.apply {
                     add(StunAttribute.createStunAttribute(AttributeType.LIFETIME.type, lifetime))
                     add(StunAttribute.createStunAttribute(AttributeType.USERNAME.type, username!!))
-                    add(StunAttribute.createStunAttribute(AttributeType.REALM.type, realm!!))
-                    add(StunAttribute.createStunAttribute(AttributeType.NONCE.type, nonce!!))
+                    realm?.let {
+                        add(StunAttribute.createStunAttribute(AttributeType.REALM.type, it))
+                    }
+                    nonce?.let {
+                        add(StunAttribute.createStunAttribute(AttributeType.NONCE.type, it))
+                    }
                 }
             }
 

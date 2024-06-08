@@ -13,13 +13,12 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.ObsoleteCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.channels.ticker
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import online.desidev.kotlinutils.Fll
 import online.desidev.kotlinutils.ReentrantMutex
 import java.io.IOException
 import java.net.DatagramPacket
@@ -34,6 +33,13 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
+
+
+interface TurnAgent {
+    fun allocate(): Fll<List<ICECandidate>, IOException>
+    fun delete(): Fll<Unit, IOException>
+}
+
 
 class TurnClient(
     private val serverAddress: InetSocketAddress,
@@ -71,7 +77,6 @@ class TurnClient(
 
 
     init {
-        expiryTimer()
         keepRefreshing()
     }
 
@@ -80,10 +85,8 @@ class TurnClient(
             withContext(NonCancellable) {
                 try {
                     socketHandler = socketHandler ?: SocketHandler().apply { start() }
-                    val allocateRequest = allocateRequestBuilder
-                        .setNonce(nonce)
-                        .setRealm(realm)
-                        .build()
+                    val allocateRequest =
+                        allocateRequestBuilder.setNonce(nonce).setRealm(realm).build()
 
                     val response = socketHandler!!.sendRequest(allocateRequest)
                     if (response.msgClass == MessageClass.SUCCESS_RESPONSE) {
@@ -205,14 +208,11 @@ class TurnClient(
             if (allocation != null) {
                 withContext(NonCancellable) {
                     val request = bindingRequestBuilder.setChannelNumber(channel.channelNumber)
-                        .setPeerAddress(channel.peerAddress)
-                        .setNonce(nonce)
-                        .setRealm(realm)
-                        .build()
+                        .setPeerAddress(channel.peerAddress).setNonce(nonce).setRealm(realm).build()
 
                     socketHandler?.sendRequest(request)?.let {
                         if (it.msgClass == MessageClass.SUCCESS_RESPONSE) {
-                            channel.timeToExpiry = 5.minutes
+                            channel.resetExpireTime(5.minutes)
                         }
                     }
                 }
@@ -238,7 +238,7 @@ class TurnClient(
                                 ?.getValueAsInt()
                                 ?: throw RuntimeException("Lifetime not found in response")
 
-                        allocation?.timeToExpiry = lifetimeAttr.seconds
+                        allocation?.resetExpireTime(lifetimeAttr.seconds)
                     }
 
                     MessageClass.ERROR_RESPONSE -> {
@@ -295,51 +295,31 @@ class TurnClient(
         }
     }
 
-
-    @OptIn(ObsoleteCoroutinesApi::class)
-    private fun expiryTimer() {
-        val ticker = ticker(1000, 1000)
-        scope.launch {
-            while (isActive) {
-                ticker.receive()
-                if (allocation == null) continue
-
-                allocation?.let {
-                    it.timeToExpiry -= 1.seconds
-                    if (it.isExpired()) {
-                        dataChannels.forEach { dataChannel -> dataChannel.close() }
-                        dataChannels.clear()
-                    }
-                }
-
-                dataChannels.forEach { it.timeToExpiry -= 1.seconds }
-                dataChannels.removeAll { it.isExpired() }
-            }
-        }.invokeOnCompletion { ticker.cancel() }
-    }
-
     private fun keepRefreshing() {
         scope.launch {
             while (isActive) {
                 delay(1.seconds)
-                if (allocation == null) continue
-
-                mutex.withLock {
-                    if (allocation!!.timeToExpiry < 1.minutes) {
+                allocation?.let { alloc ->
+                    if (alloc.isCloseToExpire()) {
                         refresh(10.minutes)
+                    } else if (alloc.isExpired()) {
+                        allocation = null
+                        dataChannels.forEach {
+                            if (!it.isClosed) it.close()
+                        }
+                        dataChannels.clear()
                     }
+
                     if (dataChannels.isNotEmpty()) {
-                        dataChannels
-                            .filter { !it.isClosed }
-                            .forEach {
-                                if (it.timeToExpiry < 1.minutes) {
-                                    try {
-                                        refreshChannelBinding(it)
-                                    } catch (ex: Exception) {
-                                        ex.printStackTrace()
-                                    }
+                        dataChannels.filter { !it.isClosed }.forEach {
+                            if (it.isCloseToExpire()) {
+                                try {
+                                    refreshChannelBinding(it)
+                                } catch (ex: Exception) {
+                                    ex.printStackTrace()
                                 }
                             }
+                        }
                     }
                 }
             }
@@ -392,18 +372,13 @@ class TurnClient(
     private inner class DataChannel(
         override val peerAddress: AddressValue,
         override val channelNumber: Int,
-    ) : ChannelBinding {
+    ) : ChannelBinding, ExpireAble by ExpireAbleImpl(5.minutes) {
 
         private var dataCallback: DataCallback? = null
         var isClosed: Boolean = false
             set(value) = synchronized(this) { field = value }
             get() = synchronized(this) { field }
 
-        var timeToExpiry = 5.minutes
-            get() = synchronized(this) { field }
-            set(value) = synchronized(this) { field = value }
-
-        fun isExpired() = timeToExpiry <= 0.seconds
         override fun sendData(bytes: ByteArray) = synchronized(this) {
             if (!isClosed) {
                 sendChannelData(channelNumber, bytes)
@@ -512,8 +487,7 @@ class TurnClient(
                 override fun onResponse(response: Message) {
                     responseDeferred.complete(response)
                     println(
-                        "onResponse ***************************** " +
-                                "\n $response \n"
+                        "onResponse ***************************** " + "\n $response \n"
                     )
                 }
 
@@ -538,8 +512,7 @@ class TurnClient(
                     }
                     try {
                         println(
-                            "Request sent: ******************************" +
-                                    "\n$message \n"
+                            "Request sent: ******************************" + "\n$message \n"
                         )
                         sendReqMessage(message)
                     } catch (ex: Exception) {
@@ -588,16 +561,6 @@ class TurnClient(
         }
     }
 
-    class Allocation(
-        lifetime: Duration,
-        val iceCandidates: List<ICECandidate>
-    ) {
-        var timeToExpiry = lifetime
-            get() = synchronized(this) { field }
-            set(value) = synchronized(this) { field = value }
-
-        fun isExpired() = timeToExpiry <= 1.seconds
-    }
 
     companion object {
         const val REQUEST_TIMEOUT = 15000L // 15 seconds

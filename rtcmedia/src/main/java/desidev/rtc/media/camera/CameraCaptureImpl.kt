@@ -414,25 +414,23 @@ class CameraCaptureImpl(context: Context) : CameraCapture {
         val faceDetectsMode =
             characteristics.get(CameraCharacteristics.STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES)
 
-        val captureRequest = cameraDevice?.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)?.run {
+        val captureRequest = cameraDevice?.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)?.run {
 
             set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(30, 30))
-            set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, aeCompensationRange!!.upper)
             set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
-            isoRange?.let {
-                set(CaptureRequest.SENSOR_SENSITIVITY, it.upper)
-            }
+//            set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, aeCompensationRange!!.upper)
+//            isoRange?.let {
+//                set(CaptureRequest.SENSOR_SENSITIVITY, it.upper)
+//            }
 
-            faceDetectsMode?.let {
-                if (it.isNotEmpty()) {
-                    set(
-                        CaptureRequest.STATISTICS_FACE_DETECT_MODE,
-                        CameraCharacteristics.STATISTICS_FACE_DETECT_MODE_FULL
-                    )
-                }
-            }
-
-
+//            faceDetectsMode?.let {
+//                if (it.isNotEmpty()) {
+//                    set(
+//                        CaptureRequest.STATISTICS_FACE_DETECT_MODE,
+//                        CameraCharacteristics.STATISTICS_FACE_DETECT_MODE_FULL
+//                    )
+//                }
+//            }
 
             addTarget(previewImageReader!!.surface)
             encoder?.let { addTarget(it.inputSurface) }

@@ -60,7 +60,7 @@ interface CameraCapture {
     }
 
     sealed class Quality(val pixelElems: Int) {
-        data object Lowest : Quality(480 * 360)
+        data object Lowest : Quality(240 * 320)
         data object Low : Quality(640 * 480)
         data object Medium : Quality(1280 * 720)
         data object High : Quality(1920 * 1080)
