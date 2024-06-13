@@ -1,10 +1,6 @@
 package desidev.turnclient.message
 
-import desidev.turnclient.attribute.AddressValue
-import desidev.turnclient.attribute.AttributeType
 import desidev.turnclient.attribute.StunAttribute
-import desidev.turnclient.attribute.TransportProtocol
-import desidev.turnclient.util.generateHashCode
 import desidev.turnclient.util.multipleOfFour
 import java.nio.ByteBuffer
 import java.security.SecureRandom
@@ -13,7 +9,7 @@ import java.security.SecureRandom
 /**
  * A STUN/TURN message class.
  */
-data class Message(
+data class TurnMessage(
     val header: MessageHeader,
     val attributes: List<StunAttribute>,
 ) {
@@ -80,7 +76,7 @@ data class Message(
         const val MAGIC_COCKIE: Int = 0x2112A442
         const val MESSAGE_CLASS_MASK: UShort = 0x0110u
 
-        fun parse(byteArray: ByteArray): Message {
+        fun parse(byteArray: ByteArray): TurnMessage {
             if (byteArray.size % 4 != 0) {
                 throw InvalidStunMessage("Invalid message. Must be a multiple of 4 bytes")
             }
@@ -106,7 +102,7 @@ data class Message(
                 // msg integrity check
                 
 
-                Message(header, attributes)
+                TurnMessage(header, attributes)
             } catch (ex: Exception) {
                 throw InvalidStunMessage(cause = ex)
             }

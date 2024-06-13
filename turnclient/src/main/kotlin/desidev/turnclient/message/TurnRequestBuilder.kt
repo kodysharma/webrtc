@@ -4,17 +4,17 @@ import desidev.turnclient.attribute.AddressValue
 import desidev.turnclient.attribute.AttributeType
 import desidev.turnclient.attribute.StunAttribute
 import desidev.turnclient.attribute.TransportProtocol
-import desidev.turnclient.message.Message.Companion.MAGIC_COCKIE
-import desidev.turnclient.message.Message.Companion.generateTransactionId
+import desidev.turnclient.message.TurnMessage.Companion.MAGIC_COCKIE
+import desidev.turnclient.message.TurnMessage.Companion.generateTransactionId
 import desidev.turnclient.util.generateHashCode
 
-class StunRequestBuilder {
+class TurnRequestBuilder {
     private lateinit var txBytes: ByteArray
     private var requestUpdated = true
     private val stunAttributes = mutableSetOf<StunAttribute>()
 
     private var messageType: MessageType = MessageType.ALLOCATE_REQUEST
-    private var message: Message? = null
+    private var message: TurnMessage? = null
 
     // attributes
     private var requestedTransport: Int = TransportProtocol.UDP.code
@@ -29,7 +29,7 @@ class StunRequestBuilder {
     private var peerAddress: AddressValue? = null
 
 
-    fun setMessageType(messageType: MessageType): StunRequestBuilder {
+    fun setMessageType(messageType: MessageType): TurnRequestBuilder {
         assert(messageType.type and MessageClass.REQUEST.type == MessageClass.REQUEST.type)
         if (this.messageType != messageType) {
             this.messageType = messageType
@@ -38,7 +38,7 @@ class StunRequestBuilder {
         return this
     }
 
-    fun setRealm(realm: String?): StunRequestBuilder {
+    fun setRealm(realm: String?): TurnRequestBuilder {
         if (!this.realm.contentEquals(realm)) {
             this.realm = realm
             requestUpdated = true
@@ -46,7 +46,7 @@ class StunRequestBuilder {
         return this
     }
 
-    fun setNonce(nonce: String?): StunRequestBuilder {
+    fun setNonce(nonce: String?): TurnRequestBuilder {
         if (!this.nonce.contentEquals(nonce)) {
             this.nonce = nonce
             requestUpdated = true
@@ -54,7 +54,7 @@ class StunRequestBuilder {
         return this
     }
 
-    fun setUsername(username: String): StunRequestBuilder {
+    fun setUsername(username: String): TurnRequestBuilder {
         if (!this.username.contentEquals(username)) {
             this.username = username
             requestUpdated = true
@@ -62,7 +62,7 @@ class StunRequestBuilder {
         return this
     }
 
-    fun setPassword(password: String): StunRequestBuilder {
+    fun setPassword(password: String): TurnRequestBuilder {
         if (!this.password.contentEquals(password)) {
             this.password = password
             requestUpdated = true
@@ -70,7 +70,7 @@ class StunRequestBuilder {
         return this
     }
 
-    fun setLifetime(lifetime: Int): StunRequestBuilder {
+    fun setLifetime(lifetime: Int): TurnRequestBuilder {
         if (this.lifetime != lifetime) {
             this.lifetime = lifetime
             requestUpdated = true
@@ -79,7 +79,7 @@ class StunRequestBuilder {
     }
 
 
-    fun setChannelNumber(channelNumber: Int): StunRequestBuilder {
+    fun setChannelNumber(channelNumber: Int): TurnRequestBuilder {
         if (this.channelNumber != channelNumber) {
             this.channelNumber = channelNumber
             requestUpdated = true
@@ -87,7 +87,7 @@ class StunRequestBuilder {
         return this
     }
 
-    fun setPeerAddress(peerAddress: AddressValue): StunRequestBuilder {
+    fun setPeerAddress(peerAddress: AddressValue): TurnRequestBuilder {
         if (this.peerAddress != peerAddress) {
             this.peerAddress = peerAddress
             requestUpdated = true
@@ -95,7 +95,7 @@ class StunRequestBuilder {
         return this
     }
 
-    fun build(): Message {
+    fun build(): TurnMessage {
         if (requestUpdated) {
             txBytes = generateTransactionId()
             message = null
@@ -199,7 +199,7 @@ class StunRequestBuilder {
             val messageIntegrity = StunAttribute.createStunAttribute(
                 AttributeType.MESSAGE_INTEGRITY.type,
                 generateHashCode(
-                    input = Message(header, attributes).encodeToByteArray(),
+                    input = TurnMessage(header, attributes).encodeToByteArray(),
                     key = "$username:$realm:$password"
                 )
             )
@@ -207,6 +207,6 @@ class StunRequestBuilder {
         }
 
         requestUpdated = false
-        return Message(header, attributes).also { message = it }
+        return TurnMessage(header, attributes).also { message = it }
     }
 }
