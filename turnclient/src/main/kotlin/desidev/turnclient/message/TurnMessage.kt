@@ -18,6 +18,8 @@ data class TurnMessage(
         MessageClass.entries.find { it.type == maskedValue }!!
     }
 
+    val txId: MessageHeader.TransactionId get() = header.txId
+
     init {
         val not = MessageType.isValidType(header.msgType).not()
         if (not) {

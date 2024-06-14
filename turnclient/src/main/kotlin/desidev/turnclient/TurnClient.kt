@@ -1,14 +1,21 @@
 package desidev.turnclient
 
+import arrow.core.Either
+import arrow.core.flatMap
+import arrow.core.getOrElse
+import arrow.core.left
+import arrow.core.raise.either
+import arrow.core.right
 import desidev.turnclient.attribute.AddressValue
 import desidev.turnclient.attribute.AttributeType
 import desidev.turnclient.attribute.TransportProtocol
-import desidev.turnclient.message.Message
 import desidev.turnclient.message.MessageClass
 import desidev.turnclient.message.MessageHeader
 import desidev.turnclient.message.MessageType
-import desidev.turnclient.message.StunRequestBuilder
+import desidev.turnclient.message.TurnMessage
+import desidev.turnclient.message.TurnRequestBuilder
 import desidev.turnclient.util.NumberSeqGenerator
+import desidev.turnclient.util.toHexString
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -18,7 +25,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import online.desidev.kotlinutils.Fll
+import kotlinx.coroutines.withTimeout
 import online.desidev.kotlinutils.ReentrantMutex
 import java.io.IOException
 import java.net.DatagramPacket
@@ -34,536 +41,282 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
+private const val LIFETIME_SEC = 600
 
-interface TurnAgent {
-    fun allocate(): Fll<List<ICECandidate>, IOException>
-    fun delete(): Fll<Unit, IOException>
+internal interface TurnOperations {
+    @Throws(AllocationMismatchException::class)
+    suspend fun allocate(): Either<TurnRequestFailure, Allocation>
+    suspend fun refresh(): Either<TurnRequestFailure, Unit>
+    suspend fun clear(): Either<TurnRequestFailure, Unit>
+    suspend fun createPermission(
+        channelNumber: Int, peerAddress: AddressValue
+    ): Either<TurnRequestFailure, Unit>
+
+    suspend fun send(msg: ByteArray, channelNumber: Int)
+    fun setRealm(realm: String)
+    fun setNonce(nonce: String)
+    fun setCallback(cb: Callback?)
+    interface Callback {
+        fun onReceive(channelNumber: Int, msg: ByteArray)
+    }
 }
 
 
-class TurnClient(
-    private val serverAddress: InetSocketAddress,
-    private val username: String,
-    private val password: String
-) {
-    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private val mutex = ReentrantMutex()
-    private var allocation: Allocation? = null
-    private val dataChannels = mutableSetOf<DataChannel>()
+interface TurnSocket {
+    suspend fun allocate(): Either<TurnRequestFailure, Unit>
+    fun getIce(): List<ICECandidate>
 
-    private var socketHandler: SocketHandler? = null
-    private val numberSeqGenerator = NumberSeqGenerator(0x4000..0x7FFF)
-
-    private var nonce: String? = null
-    private var realm: String? = null
-
-    private val allocateRequestBuilder = StunRequestBuilder().apply {
-        setMessageType(MessageType.ALLOCATE_REQUEST)
-        setUsername(username)
-        setPassword(password)
+    /**
+     * Create Peer Permission via channel binding.
+     * You can start communicating after this call.
+     */
+    suspend fun addPeer(peer: InetSocketAddress): Either<TurnRequestFailure, Unit>
+    fun send(message: ByteArray, peer: InetSocketAddress)
+    fun removePeer()
+    fun isAllocationExist(): Boolean
+    fun addListener(listener: Listener)
+    suspend fun close()
+    interface Listener {
+        fun onReceive(message: ByteArray, peer: InetSocketAddress)
     }
+}
 
-    private val bindingRequestBuilder = StunRequestBuilder().apply {
-        setMessageType(MessageType.CHANNEL_BIND_REQ)
-        setUsername(username)
-        setPassword(password)
+class TurnSocketConfigParameters(
+    var username: String,
+    var password: String,
+    var localHostIp: String = "0.0.0.0",
+    var localPort: Int? = null,
+    var turnServerHost: String,
+    var turnServerPort: Int,
+)
+
+fun TurnSocket(configParameters: TurnSocketConfigParameters): Either<Exception, TurnSocket> = either {
+    val socket = UdpSocket(configParameters.localHostIp, configParameters.localPort).getOrElse { raise(it) }
+    val turnConfig = TurnConfig(
+        username = configParameters.username,
+        password = configParameters.password,
+        ip = configParameters.turnServerHost,
+        port = configParameters.turnServerPort,
+    )
+
+    val operations = TurnOperationsImpl(socket, turnConfig)
+
+    TODO()
+}
+
+
+internal class TurnOperationsImpl(
+    private val socket: UdpSocket,
+    turnConfig: TurnConfig
+) : TurnOperations
+{
+
+    private var turnRequest = TurnRequestBuilder()
+        .setUsername(turnConfig.username)
+        .setPassword(turnConfig.password)
+
+    private val turnTransportAddress = TransportAddress(turnConfig.ip, turnConfig.port)
+
+    private var callback: TurnOperations.Callback? = null
+
+    private val turnMsgTxRegister = mutableMapOf<MessageHeader.TransactionId, MsgTx>()
+
+    // dispatches incoming udp messages
+    private val udpMsgCallback = MessageObserver.MsgCallback { udpMsg ->
+        val byteArray = udpMsg.bytes
+        val channelNumber = (byteArray[0].toInt() shl 8) or byteArray[1].toInt()
+        if (channelNumber in 0x4000..0x7FFF) {
+            callback?.onReceive(channelNumber, byteArray)
+        }
+        val turnMsg = TurnMessage.parse(byteArray)
+        val msgTx = turnMsgTxRegister[turnMsg.txId]
+        msgTx?.complete(turnMsg)
+            ?: println("TurnMsg Response Discarded with id ${
+                turnMsg.txId.bytes
+                    .toHexString()
+            }")
     }
-
-    private val refreshRequestBuilder = StunRequestBuilder().apply {
-        setMessageType(MessageType.ALLOCATE_REFRESH_REQUEST)
-        setUsername(username)
-        setPassword(password)
-    }
-
 
     init {
-        keepRefreshing()
+        // listen incoming message on socket
+        socket.addCallback(udpMsgCallback)
     }
 
-    suspend fun createAllocation(): Result<List<ICECandidate>> {
-        return mutex.withLock {
-            withContext(NonCancellable) {
-                try {
-                    socketHandler = socketHandler ?: SocketHandler().apply { start() }
-                    val allocateRequest =
-                        allocateRequestBuilder.setNonce(nonce).setRealm(realm).build()
+    override suspend fun allocate(): Either<TurnRequestFailure, Allocation> {
+        val request = turnRequest.setMessageType(MessageType.ALLOCATE_REQUEST)
+            .setLifetime(LIFETIME_SEC)
+            .build()
 
-                    val response = socketHandler!!.sendRequest(allocateRequest)
-                    if (response.msgClass == MessageClass.SUCCESS_RESPONSE) {
-                        allocation = parseAllocationResult(response)
-                        Result.success(allocation!!.iceCandidates)
+        val response = sendTurnRequest(request).getOrElse { return it.left() }
+        return handleAllocateResponse(response)
+    }
 
-                    } else {
-                        val errorAttr =
-                            response.attributes.find { it.type == AttributeType.ERROR_CODE.type }
-                        if (errorAttr != null) {
-                            val errorValue = errorAttr.getAsErrorValue()
-                            when (errorValue.code) {
-                                // Unauthorized
-                                401 -> {
-                                    if (realm != null) {
-                                        throw IOException("Invalid username or password.")
-                                    }
+    override suspend fun refresh(): Either<TurnRequestFailure, Unit> {
+        val request = turnRequest
+            .setMessageType(MessageType.ALLOCATE_REFRESH_REQUEST)
+            .setLifetime(LIFETIME_SEC)
+            .build()
 
-                                    realm =
-                                        response.attributes.find { it.type == AttributeType.REALM.type }
-                                            ?.getValueAsString()
-                                    nonce =
-                                        response.attributes.find { it.type == AttributeType.NONCE.type }
-                                            ?.getValueAsString()
-                                    // retry
-                                    createAllocation()
-                                }
-                                // Stale nonce
-                                438 -> {
-                                    nonce =
-                                        response.attributes.find { it.type == AttributeType.NONCE.type }
-                                            ?.getValueAsString()
-                                    // retry
-                                    createAllocation()
-                                }
-
-                                else -> {
-                                    throw IOException("Allocation failed with error: $errorValue")
-                                }
-                            }
-                        } else {
-                            throw IOException("Allocation failed with Unknown error")
-                        }
-                    }
-                } catch (ex: Exception) {
-                    Result.failure(ex)
-                }
-            }
+        return sendTurnRequest(request).flatMap {
+            if (it.msgClass != MessageClass.SUCCESS_RESPONSE) parseError(it).left()
+            else Unit.right()
         }
     }
 
-    suspend fun bindChannel(peerAddress: AddressValue): Result<ChannelBinding> =
-        withContext(NonCancellable) {
-            mutex.withLock {
-                try {
-                    if (allocation == null) {
-                        throw IllegalStateException("Cannot add peer address before creating an allocation. Please create an allocation first.")
-                    }
 
-                    val channel = dataChannels.find { it.peerAddress == peerAddress }
-                    if (channel != null) {
-                        channel.isClosed = false
-                        return@withLock Result.success(channel)
-                    }
-
-                    val channelNumber = numberSeqGenerator.next()
-                    val channelBind = bindingRequestBuilder.setChannelNumber(channelNumber)
-                        .setPeerAddress(peerAddress).setNonce(nonce).setRealm(realm).build()
-
-                    val response = socketHandler!!.sendRequest(channelBind)
-
-                    when (response.msgClass) {
-                        MessageClass.SUCCESS_RESPONSE -> {
-                            val dataChannel = DataChannel(peerAddress, channelNumber)
-                            dataChannels.add(dataChannel)
-                            Result.success(dataChannel)
-                        }
-
-                        MessageClass.ERROR_RESPONSE -> {
-                            val errorCode =
-                                response.attributes.find { it.type == AttributeType.ERROR_CODE.type }
-                                    ?.getAsErrorValue()
-                                    ?: throw RuntimeException("Error code not found in response")
-
-                            when (errorCode.code) {
-                                // stale nonce
-                                438 -> {
-                                    nonce =
-                                        response.attributes.find { it.type == AttributeType.NONCE.type }
-                                            ?.getValueAsString()
-                                    // retry
-                                    bindChannel(peerAddress)
-                                }
-
-                                // channel number is already bind to this peer
-                                400 -> {
-                                    Result.success(DataChannel(peerAddress, channelNumber))
-                                }
-
-                                else -> {
-                                    throw IOException("Channel bind request failed with error code: $errorCode")
-                                }
-                            }
-                        }
-
-                        else -> {
-                            throw IOException("Unknown error")
-                        }
-                    }
-
-                } catch (ex: Exception) {
-                    Result.failure(ex)
-                }
+    private suspend fun sendTurnRequest(
+        msg: TurnMessage): Either<RequestTimeoutException, TurnMessage> {
+        val msgTx = MsgTx(msg.txId)
+        registerMsgTx(msgTx)
+        msg.sendOnSocket()
+        return Either.catch {
+            withTimeout(5000) {
+                msgTx.await()
             }
-        }
-
-    private suspend fun refreshChannelBinding(channel: DataChannel) {
-        mutex.withLock {
-            if (allocation != null) {
-                withContext(NonCancellable) {
-                    val request = bindingRequestBuilder.setChannelNumber(channel.channelNumber)
-                        .setPeerAddress(channel.peerAddress).setNonce(nonce).setRealm(realm).build()
-
-                    socketHandler?.sendRequest(request)?.let {
-                        if (it.msgClass == MessageClass.SUCCESS_RESPONSE) {
-                            channel.resetExpireTime(5.minutes)
-                        }
-                    }
-                }
+        }.mapLeft { RequestTimeoutException() }
+            .also {
+                unregisterMsgTx(msgTx)
             }
+    }
+
+    override suspend fun clear(): Either<TurnRequestFailure, Unit> {
+        val request = turnRequest.setMessageType(MessageType.ALLOCATE_REFRESH_REQUEST)
+            .setLifetime(0)
+            .build()
+
+        return sendTurnRequest(request).flatMap {
+            if (it.msgClass == MessageClass.SUCCESS_RESPONSE) Unit.right()
+            else parseError(it).left()
         }
     }
 
-    // this refreshes the allocation
-    private suspend fun refresh(lifetime: Duration) {
-        check(lifetime.inWholeSeconds >= 0) { "Lifetime should be eq/greater than 0" }
-        mutex.withLock {
-            if (allocation != null) {
-                val refreshRequest = refreshRequestBuilder.apply {
-                    setLifetime(lifetime.inWholeSeconds.toInt())
-                    setRealm(realm!!)
-                    setNonce(nonce!!)
-                }.build()
-                val response = socketHandler!!.sendRequest(refreshRequest)
-                when (response.msgClass) {
-                    MessageClass.SUCCESS_RESPONSE -> {
-                        val lifetimeAttr =
-                            response.attributes.find { it.type == AttributeType.LIFETIME.type }
-                                ?.getValueAsInt()
-                                ?: throw RuntimeException("Lifetime not found in response")
+    override suspend fun createPermission(
+        channelNumber: Int,
+        peerAddress: AddressValue
+    ): Either<TurnRequestFailure, Unit> {
+        val request = turnRequest.setMessageType(MessageType.CHANNEL_BIND_REQ)
+            .setChannelNumber(channelNumber)
+            .setPeerAddress(peerAddress)
+            .build()
 
-                        allocation?.resetExpireTime(lifetimeAttr.seconds)
-                    }
-
-                    MessageClass.ERROR_RESPONSE -> {
-                        val errorValue =
-                            response.attributes.find { it.type == AttributeType.ERROR_CODE.type }
-                                ?.getAsErrorValue()
-                                ?: throw RuntimeException("Error code not found in response")
-
-                        when (errorValue.code) {
-                            // stale nonce
-                            438 -> {
-                                nonce =
-                                    response.attributes.find { it.type == AttributeType.NONCE.type }
-                                        ?.getValueAsString()
-                                refresh(lifetime)
-                            }
-
-                            else -> {
-                                throw IOException("Refresh failed with error code: $errorValue")
-                            }
-                        }
-                    }
-
-                    else -> throw IOException("Unknown error")
-                }
-            }
+        return sendTurnRequest(request).flatMap {
+            if (it.msgClass == MessageClass.SUCCESS_RESPONSE) Unit.right()
+            else parseError(it).left()
         }
     }
 
-    suspend fun deleteAllocation() {
-        mutex.withLock {
-            refresh(0.seconds)
-            allocation = null
+    override suspend fun send(msg: ByteArray, channelNumber: Int) {
+        val channelData = ByteBuffer.allocate(4 + msg.size)
+        channelData.putShort(channelNumber.toShort()) // 2 bytes channel number
+        channelData.putShort(msg.size.toShort()) // 2 bytes data length
+        channelData.put(msg) // application data
 
-            dataChannels.forEach { it.isClosed = true }
-            dataChannels.clear()
+        socket.send(UdpMsg(turnTransportAddress, channelData.array()))
+    }
 
-            withContext(Dispatchers.IO) {
-                socketHandler?.cancel()
-                socketHandler?.join()
-                socketHandler = null
-            }
+    override fun setRealm(realm: String) {
+        turnRequest.setRealm(realm)
+    }
+
+    override fun setNonce(nonce: String) {
+        turnRequest.setNonce(nonce)
+    }
+
+    override fun setCallback(cb: TurnOperations.Callback?) {
+        this.callback = cb
+    }
+
+
+    private suspend fun TurnMessage.sendOnSocket() {
+        withContext(Dispatchers.IO) {
+            socket.send(UdpMsg(turnTransportAddress, encodeToByteArray()))
         }
     }
 
-    suspend fun reset() {
-        mutex.withLock {
-            allocation = null
-            withContext(Dispatchers.IO) {
-                socketHandler?.cancel()
-                socketHandler?.join()
-                socketHandler = null
-            }
-        }
-    }
+    private fun handleAllocateResponse(msg: TurnMessage): Either<TurnRequestFailure, Allocation> =
+        either {
+            if (msg.msgClass == MessageClass.SUCCESS_RESPONSE) {
+                val attrs = msg.attributes
+                val relayedAddr = attrs.find { it.type == AttributeType.XOR_RELAYED_ADDRESS.type }
+                    ?.getValueAsAddress()
+                    ?.xorAddress()
+                    ?: raise(MissingAttributeException(AttributeType.XOR_RELAYED_ADDRESS.name))
 
-    private fun keepRefreshing() {
-        scope.launch {
-            while (isActive) {
-                delay(1.seconds)
-                allocation?.let { alloc ->
-                    if (alloc.isCloseToExpire()) {
-                        refresh(10.minutes)
-                    } else if (alloc.isExpired()) {
-                        allocation = null
-                        dataChannels.forEach {
-                            if (!it.isClosed) it.close()
-                        }
-                        dataChannels.clear()
-                    }
+                val xorMappedAddr = attrs.find { it.type == AttributeType.XOR_MAPPED_ADDRESS.type }
+                    ?.getValueAsAddress()
+                    ?.xorAddress()
+                    ?: raise(MissingAttributeException(AttributeType.XOR_MAPPED_ADDRESS.name))
 
-                    if (dataChannels.isNotEmpty()) {
-                        dataChannels.filter { !it.isClosed }.forEach {
-                            if (it.isCloseToExpire()) {
-                                try {
-                                    refreshChannelBinding(it)
-                                } catch (ex: Exception) {
-                                    ex.printStackTrace()
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+                val lifetime = attrs.find { it.type == AttributeType.LIFETIME.type }
+                    ?.getValueAsInt()
+                    ?: raise(MissingAttributeException(AttributeType.LIFETIME.name))
 
-    private fun parseAllocationResult(response: Message): Allocation {
-        val attrs = response.attributes
-
-        val relayedAddr =
-            attrs.find { it.type == AttributeType.XOR_RELAYED_ADDRESS.type }?.getValueAsAddress()
-                ?.xorAddress()
-                ?: throw RuntimeException("Expected attribute not found ${AttributeType.XOR_RELAYED_ADDRESS.name}")
-
-        val xorMappedAddr =
-            attrs.find { it.type == AttributeType.XOR_MAPPED_ADDRESS.type }?.getValueAsAddress()
-                ?.xorAddress()
-                ?: throw RuntimeException("Expected attribute not found ${AttributeType.XOR_MAPPED_ADDRESS.name}")
-
-        val lifetime = attrs.find { it.type == AttributeType.LIFETIME.type }?.getValueAsInt()
-            ?: throw RuntimeException(
-                "Expected attribute not found ${AttributeType.LIFETIME.name}"
-            )
-
-        val candidates = listOf(
-            ICECandidate(
-                ip = InetAddress.getByAddress(relayedAddr.address).hostAddress,
-                port = relayedAddr.port,
-                type = ICECandidate.CandidateType.RELAY,
-                protocol = TransportProtocol.UDP,
-                priority = 3
-            ), ICECandidate(
-                ip = InetAddress.getByAddress(xorMappedAddr.address).hostAddress,
-                port = xorMappedAddr.port,
-                type = ICECandidate.CandidateType.SRFLX,
-                protocol = TransportProtocol.UDP,
-                priority = 2
-            ), ICECandidate(
-                ip = InetAddress.getLoopbackAddress().hostAddress,
-                port = socketHandler!!.localPort,
-                type = ICECandidate.CandidateType.HOST,
-                protocol = TransportProtocol.UDP,
-                priority = 1
-            )
-        )
-
-        return Allocation(lifetime.seconds, candidates)
-    }
-
-    private inner class DataChannel(
-        override val peerAddress: AddressValue,
-        override val channelNumber: Int,
-    ) : ChannelBinding, ExpireAble by ExpireAbleImpl(5.minutes) {
-
-        private var dataCallback: DataCallback? = null
-        var isClosed: Boolean = false
-            set(value) = synchronized(this) { field = value }
-            get() = synchronized(this) { field }
-
-        override fun sendData(bytes: ByteArray) = synchronized(this) {
-            if (!isClosed) {
-                sendChannelData(channelNumber, bytes)
-            }
-        }
-
-        fun onDataReceived(data: ByteArray) {
-            if (!isClosed) {
-                dataCallback?.onReceived(data)
-            }
-        }
-
-        override fun setDataCallback(callback: DataCallback) {
-            this.dataCallback = callback
-        }
-
-        override fun close() {
-            isClosed = true
-            dataCallback = null
-        }
-
-        private fun sendChannelData(channelNo: Int, data: ByteArray) {
-            val channelData = ByteBuffer.allocate(4 + data.size)
-            channelData.putShort(channelNo.toShort()) // 2 bytes channel number
-            channelData.putShort(data.size.toShort()) // 2 bytes data length
-            channelData.put(data) // application data
-
-            val packet = DatagramPacket(channelData.array(), channelData.capacity())
-            try {
-                socketHandler!!.sendPacket(packet)
-            } catch (ex: Exception) {
-                ex.printStackTrace()
-            }
-        }
-
-        override fun toString(): String {
-            return "ChannelBindingImpl(peerAddress=$peerAddress, channelNumber=$channelNumber)"
-        }
-    }
-
-    private abstract class ResponseCallback {
-        abstract fun onResponse(response: Message)
-        abstract fun onTimeout()
-    }
-
-    private inner class SocketHandler : Thread() {
-        private var running = false
-        private val buffer = ByteArray(65000)
-        private val socket: DatagramSocket = DatagramSocket()
-
-        private val callbackRegistry: MutableMap<MessageHeader.TransactionId, ResponseCallback> =
-            Collections.synchronizedMap(HashMap())
-        val localPort get() = socket.localPort
-
-        override fun run() {
-            running = true
-            while (running) {
-                // receive incoming data from socket
-                try {
-                    val packet = DatagramPacket(buffer, buffer.size)
-                    socket.receive(packet)
-                    val receivedData =
-                        packet.data.copyOfRange(packet.offset, packet.offset + packet.length)
-
-                    dispatchMessage(receivedData)
-
-                } catch (ex: SocketException) {
-                    ex.printStackTrace()
-                } catch (ex: SocketTimeoutException) {
-                    ex.printStackTrace()
-                }
-            }
-        }
-
-        private fun dispatchMessage(byteArray: ByteArray) {
-            try {
-                val type = (byteArray[0].toInt() shl 8) or byteArray[1].toInt()
-                if (type in 0x4000..0x7FFF) {
-                    dataChannels.find { it.channelNumber == type }
-                        ?.onDataReceived(byteArray.copyOfRange(4, byteArray.size))
-                    return
-                }
-
-                val message = Message.parse(byteArray)
-                val header = message.header
-
-                val msgClass = header.msgType and 0x0110u
-                if (msgClass == MessageClass.SUCCESS_RESPONSE.type || msgClass == MessageClass.ERROR_RESPONSE.type) {
-                    val cb = callbackRegistry[header.txId]
-                    cb?.onResponse(message)
-                    if (cb == null) {
-                        System.err.println("No response callback found for transaction id: ${header.txId}")
-                    }
-                }
-            } catch (ex: Exception) {
-                ex.printStackTrace()
-            }
-        }
-
-        suspend fun sendRequest(message: Message, resendInterval: Long = RESEND_INTERVAL): Message {
-            assert((message.header.msgType and Message.MESSAGE_CLASS_MASK).toInt() == 0) { "Message does not describe a stun/turn request." }
-
-            val messageTxId = message.header.txId
-            val responseDeferred = CompletableDeferred<Message>()
-            val messageCallback = object : ResponseCallback() {
-                override fun onResponse(response: Message) {
-                    responseDeferred.complete(response)
-                    println(
-                        "onResponse ***************************** " + "\n $response \n"
+                val candidates = listOf(
+                    ICECandidate(
+                        ip = InetAddress.getByAddress(relayedAddr.address).hostAddress,
+                        port = relayedAddr.port, type = ICECandidate.CandidateType.RELAY,
+                        protocol = TransportProtocol.UDP, priority = 3
+                    ), ICECandidate(
+                        ip = InetAddress.getByAddress(xorMappedAddr.address).hostAddress,
+                        port = xorMappedAddr.port, type = ICECandidate.CandidateType.SRFLX,
+                        protocol = TransportProtocol.UDP, priority = 2
                     )
-                }
+                )
+                Allocation(lifetime.seconds, candidates)
 
-                override fun onTimeout() {
-                    responseDeferred.completeExceptionally(IOException("request timeout on tx: $messageTxId"))
-                }
-            }
-
-            scope.launch {
-                var timeout = REQUEST_TIMEOUT.seconds
-                var prev = System.currentTimeMillis()
-
-                callbackRegistry[messageTxId] = messageCallback
-                while (!responseDeferred.isCompleted) {
-                    val now = System.currentTimeMillis()
-                    timeout -= (now - prev).milliseconds
-                    prev = now
-
-                    if (timeout <= 0.seconds) {
-                        messageCallback.onTimeout()
-                        break
-                    }
-                    try {
-                        println(
-                            "Request sent: ******************************" + "\n$message \n"
-                        )
-                        sendReqMessage(message)
-                    } catch (ex: Exception) {
-                        ex.printStackTrace()
-                    }
-
-                    delay(resendInterval)
-                }
-                callbackRegistry.remove(messageTxId)
-            }
-
-            return responseDeferred.await()
+            } else raise(parseError(msg))
         }
 
-        private fun sendReqMessage(message: Message) {
-            val header = message.header
-            val messageClass: UShort = header.msgType and Message.MESSAGE_CLASS_MASK
-            if (messageClass == MessageClass.REQUEST.type) {
-                val packet = message.encodeToByteArray().let { DatagramPacket(it, it.size) }
-                sendPacket(packet)
-            } else {
-                throw IllegalArgumentException("This function only accepts Request Messages")
+    private fun parseError(msg: TurnMessage): TurnRequestFailure {
+        val error = msg.attributes.find { it.type == AttributeType.ERROR_CODE.type }
+            ?.getAsErrorValue() ?: return MissingAttributeException(AttributeType
+            .ERROR_CODE.name)
+
+        val turnException = when (error.code) {
+            400 -> BadRequestException()
+            401 -> {
+                val nonce = msg.attributes.find { it.type == AttributeType.NONCE.type }
+                    ?.getValueAsString()
+                    ?: return MissingAttributeException(AttributeType.NONCE.name)
+
+                val realm = msg.attributes.find { it.type == AttributeType.REALM.type }
+                    ?.getValueAsString()
+                    ?: return MissingAttributeException(AttributeType.REALM.name)
+
+                UnauthorizedException(realm, nonce)
+            }
+
+            438 -> {
+                val nonce = msg.attributes.find { it.type == AttributeType.NONCE.type }
+                    ?.getValueAsString()
+                    ?: return MissingAttributeException(AttributeType.NONCE.name)
+
+                StaleNonceException(nonce)
+            }
+
+            437 -> AllocationMismatchException(error.reason)
+            441 -> WrongCredException(error.reason)
+            else -> object : TurnRequestFailure() {
+                override val message: String = "error code: ${error.code} reason: " + error.reason
             }
         }
 
-        fun sendKeepAlive() {
-            try {
-                val packet = DatagramPacket(byteArrayOf(0, 0), 2)
-                sendPacket(packet)
-            } catch (ex: Exception) {
-                ex.printStackTrace()
-            }
-        }
-
-        fun cancel() = synchronized(Unit) {
-            running = false
-            socket.close()
-        }
-
-        fun sendPacket(packet: DatagramPacket) {
-            packet.apply {
-                address = serverAddress.address
-                port = serverAddress.port
-            }
-            socket.send(packet)
-        }
+        return turnException
     }
 
-
-    companion object {
-        const val REQUEST_TIMEOUT = 15000L // 15 seconds
-        const val RESEND_INTERVAL = 5000L // 5 seconds
+    private fun registerMsgTx(tx: MsgTx) = synchronized(this) {
+        turnMsgTxRegister[tx.txId] = tx
     }
+
+    private fun unregisterMsgTx(tx: MsgTx) = synchronized(this) {
+        turnMsgTxRegister.remove(tx.txId)
+    }
+
+    data class MsgTx(val txId: MessageHeader.TransactionId) :
+        CompletableDeferred<TurnMessage> by CompletableDeferred()
 }
+
+
+data class TurnConfig(
+    val username: String, val password: String, val ip: String, val port: Int
+)
