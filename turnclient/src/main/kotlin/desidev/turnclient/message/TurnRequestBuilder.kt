@@ -172,7 +172,9 @@ class TurnRequestBuilder {
             MessageType.ALLOCATE_REFRESH_REQUEST -> {
                 attributes.apply {
                     add(StunAttribute.createStunAttribute(AttributeType.LIFETIME.type, lifetime))
-                    add(StunAttribute.createStunAttribute(AttributeType.USERNAME.type, username!!))
+                    username?.let {
+                        add(StunAttribute.createStunAttribute(AttributeType.USERNAME.type, it))
+                    }
                     realm?.let {
                         add(StunAttribute.createStunAttribute(AttributeType.REALM.type, it))
                     }

@@ -1,7 +1,8 @@
 package desidev.turnclient.attribute
 
-import desidev.turnclient.message.Message
+import desidev.turnclient.message.TurnMessage
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 
 
@@ -41,10 +42,10 @@ data class AddressValue(
     }
 
     fun xorAddress(): AddressValue {
-        val xorPort = (Message.MAGIC_COCKIE shr 16 xor port) and 0xFFFF
+        val xorPort = (TurnMessage.MAGIC_COCKIE shr 16 xor port) and 0xFFFF
         val addr = ByteBuffer.wrap(address).int
 
-        val xorAddress = addr xor Message.MAGIC_COCKIE
+        val xorAddress = addr xor TurnMessage.MAGIC_COCKIE
         val xorBuffer = ByteBuffer.allocate(4).apply { putInt(xorAddress) }.array()
 
         return copy(address = xorBuffer, port = xorPort)
@@ -75,6 +76,10 @@ data class AddressValue(
                 throw UnsupportedOperationException("Only IPv4 addresses are supported")
             }
             return AddressValue(InetAF.IPV4, inetAddr.address, port)
+        }
+
+        fun from(sockAdr :InetSocketAddress): AddressValue {
+            return from(sockAdr.address, sockAdr.port)
         }
     }
 }

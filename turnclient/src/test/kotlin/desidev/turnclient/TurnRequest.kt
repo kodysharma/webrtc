@@ -1,16 +1,10 @@
 package desidev.turnclient
 
-import desidev.turnclient.attribute.AttributeType
-import desidev.turnclient.message.Message
-import desidev.turnclient.message.MessageClass
+import desidev.turnclient.message.TurnMessage
 import desidev.turnclient.message.MessageType
-import desidev.turnclient.message.StunRequestBuilder
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.runBlocking
+import desidev.turnclient.message.TurnRequestBuilder
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
-import kotlin.test.Test
-import kotlin.time.Duration.Companion.seconds
 
 class TurnRequest {
 
@@ -21,17 +15,17 @@ class TurnRequest {
     var nonce: String? = null
 
     val allocateRequest =
-        StunRequestBuilder().setUsername(username).setPassword(password).setLifetime(600)
+        TurnRequestBuilder().setUsername(username).setPassword(password).setLifetime(600)
 
-    val refreshRequest = StunRequestBuilder()
+    val refreshRequest = TurnRequestBuilder()
         .setMessageType(MessageType.ALLOCATE_REFRESH_REQUEST)
         .setUsername(username)
         .setPassword(password)
         .setLifetime(0)
 
     val turnTransport = TransportAddress("64.23.160.217", 3478)
-
-    val socket = UdpSocket.createInstance("0.0.0.0", 47633)
+/*
+    val socket = UdpSocket("0.0.0.0", 47633).unwrap()
 
     @Test
     fun socketTest(): Unit = runBlocking {
@@ -83,8 +77,32 @@ class TurnRequest {
             .setUsername(username)
             .setPassword(password)
             .setLifetime(600)
+//            .setRealm("desidev.online")
+            .setNonce("8527b3234298c1ff")
+
+        socket.addCallback { msg ->
+            val turnMsg = Message.parse(msg.bytes)
+            println(
+                "msg received: ${msg.ipPort}" + "\ncontent: " + "\n$turnMsg\n"
+            )
+        }
+
+        socket.sendRequest(request.build()).let { msg ->
+            if (msg.msgClass == MessageClass.ERROR_RESPONSE) {
+                println("error response")
+            }
+        }
+    }
+
+    @Test
+    fun refresh(): Unit = runBlocking {
+        val request = StunRequestBuilder()
+            .setMessageType(MessageType.ALLOCATE_REFRESH_REQUEST)
             .setRealm("desidev.online")
-            .setNonce("b1ba702b306c016b")
+            .setNonce("37b4879cf33730db")
+            .setUsername(username)
+            .setPassword(password)
+            .setLifetime(0)
 
         socket.addCallback { msg ->
             val turnMsg = Message.parse(msg.bytes)
@@ -97,32 +115,35 @@ class TurnRequest {
     }
 
     @Test
-    fun refresh(): Unit = runBlocking {
+    fun channelBinding() {
+        val peerAddr = InetSocketAddress(InetAddress.getByName("192.168.0.109"), 44999)
         val request = StunRequestBuilder()
-            .setMessageType(MessageType.ALLOCATE_REFRESH_REQUEST)
-            .setRealm("desidev.online")
-            .setNonce("b1ba702b306c016b")
+            .setMessageType(MessageType.CHANNEL_BIND_REQ)
             .setUsername(username)
             .setPassword(password)
+            .setChannelNumber(0x4001)
+            .setRealm("desidev.online")
+            .setNonce("8527b3234298c1ff")
+            .setPeerAddress(AddressValue.from(peerAddr.address, peerAddr.port))
+            .build()
 
-        socket.addCallback { msg ->
-            val turnMsg = Message.parse(msg.bytes)
-            println(
-                "msg received: ${msg.ipPort}" + "\ncontent: " + "\n$turnMsg\n"
-            )
+        runBlocking {
+            socket.addCallback { msg ->
+                val turnMsg = Message.parse(msg.bytes)
+                println("msg received: ${msg.ipPort}" + "\ncontent: " + "\n$turnMsg\n")
+            }
+            socket.sendRequest(request)
         }
+    }*/
 
-        socket.sendRequest(request.build())
-    }
-
-    private suspend fun UdpSocket.sendRequest(turnMsg: Message): Message {
+    private suspend fun UdpSocket.sendRequest(turnMsg: TurnMessage): TurnMessage {
         return suspendCancellableCoroutine { cont ->
-            val callback = object : IncomingMsgObserver.MsgCallback {
+            val callback = object : MessageObserver.MsgCallback {
                 override fun onMsgReceived(msg: UdpMsg) {
-                    val response = Message.parse(msg.bytes)
+                    val response = TurnMessage.parse(msg.bytes)
                     if (response.header.txId == turnMsg.header.txId) {
                         cont.resume(response)
-                        remoteCallback(this)
+                        removeCallback(this)
                     }
                 }
             }

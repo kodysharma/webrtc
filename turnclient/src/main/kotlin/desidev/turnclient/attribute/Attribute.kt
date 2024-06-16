@@ -1,6 +1,6 @@
 package desidev.turnclient.attribute
 
-import desidev.turnclient.message.Message.Companion.generateTransactionId
+import desidev.turnclient.message.TurnMessage.Companion.generateTransactionId
 
 class AttributeKey<T>(val typeCode: Int)
 

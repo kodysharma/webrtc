@@ -1,144 +1,94 @@
 package desidev.turnclient
 
 import arrow.core.getOrElse
-import arrow.core.raise.either
 import arrow.core.recover
+import desidev.turnclient.TurnRequestFailure.*
 import desidev.turnclient.attribute.AddressValue
 import kotlinx.coroutines.runBlocking
 import java.net.InetSocketAddress
 import kotlin.test.Test
 
-class TurnOperationsTest {
+class TurnOperationsTest
+{
     private val username = "test"
     private val password = "test123"
     private val config = TurnConfig(username, password, "64.23.160.217", 3478)
 
-    private val turnOperations = either {
-        val socket = UdpSocket(null, 9999).getOrElse { raise(it) }
+    private val turnOperations = let {
+        val socket = UdpSocket(null, 9999)
         TurnOperationsImpl(socket, config)
     }
 
     @Test
-    fun createAllocation_Test() {
+    fun createAllocation_Test()
+    {
         runBlocking {
-            val ops = turnOperations.getOrElse {
-                it.printStackTrace()
-                return@runBlocking
+            val ops = turnOperations
+            val alloc = try
+            {
+                ops.allocate()
+            }
+            catch (e: UnauthorizedException)
+            {
+                ops.setNonce(e.nonce)
+                ops.setRealm(e.realm)
+                ops.allocate()
             }
 
-            val alloc = ops.allocate().recover { failure ->
-                when (failure) {
-                    is StaleNonceException -> {
-                        ops.setNonce(failure.nonce)
-                        ops.allocate().getOrElse { raise(it) }
-                    }
 
-                    is UnauthorizedException -> {
-                        ops.apply {
-                            setNonce(failure.nonce)
-                            setRealm(failure.realm)
-                        }
-                        ops.allocate().getOrElse { raise(it) }
-                    }
-
-                    else -> raise(failure)
-                }
-            }
-
-            alloc.fold(
-                {
-                    it.printStackTrace()
-                    println("Allocation failed: ")
-                },
-                {
-                    println("Allocation: $it")
-                }
-            )
-
+            println("allcation: $alloc ")
         }
     }
 
     @Test
-    fun refresh_Allocation_Test() {
-        val ops = turnOperations.getOrElse {
-            it.printStackTrace()
-            return
-        }
-
+    fun refresh_Allocation_Test()
+    {
+        val ops = turnOperations
         runBlocking {
-            ops.refresh().recover { failure ->
-                when (failure) {
-                    is StaleNonceException -> {
-                        ops.setNonce(failure.nonce)
-                        ops.refresh().bind()
-                    }
-
-                    is UnauthorizedException -> {
-                        ops.setNonce(failure.nonce)
-                        ops.setRealm(failure.realm)
-                        ops.refresh().bind()
-                    }
-
-                    else -> raise(failure)
-                }
-            }.onLeft {
-                it.printStackTrace()
-            }.onRight {
-                println("Refresh succeed")
+            try
+            {
+                ops.refresh()
             }
+            catch (e: UnauthorizedException)
+            {
+                ops.setNonce(e.nonce)
+                ops.setRealm(e.realm)
+                ops.refresh()
+            }
+            println("Request Refresh SuccessFully!")
         }
     }
 
     @Test
     fun create_Permission_Test(): Unit = runBlocking {
-        val ops = turnOperations.getOrElse {
-            it.printStackTrace()
-            return@runBlocking
-        }
-
+        val ops = turnOperations
         val channelNumber = 0x4000
         val peer = InetSocketAddress("192.168.0.103", 44900)
-        ops.createPermission(channelNumber, AddressValue.from(peer))
-            .recover { failure ->
-                when (failure) {
-                    is UnauthorizedException -> {
-                        ops.setNonce(failure.nonce)
-                        ops.setRealm(failure.realm)
-                        ops.createPermission(channelNumber, AddressValue.from(peer))
-                    }
 
-                    else -> raise(failure)
-                }
-            }
-            .onLeft {
-                it.printStackTrace()
-            }
-            .onRight {
-                println("Request Succeed")
-            }
+        try
+        {
+            ops.createPermission(channelNumber, AddressValue.from(peer))
+        }
+        catch (e: UnauthorizedException)
+        {
+            ops.setNonce(e.nonce)
+            ops.setRealm(e.realm)
+            ops.createPermission(channelNumber, AddressValue.from(peer))
+        }
     }
 
     @Test
     fun clear_Allocation_Test(): Unit = runBlocking {
-        val ops = turnOperations.getOrElse {
-            it.printStackTrace()
-            return@runBlocking
+        val ops = turnOperations
+        try
+        {
+            ops.clear()
         }
-
-        ops.clear().recover { failure ->
-            when (failure) {
-                is UnauthorizedException -> {
-                    ops.setNonce(failure.nonce)
-                    ops.setRealm(failure.realm)
-                    ops.clear()
-                }
-
-                else -> raise(failure)
-            }
-        }.onLeft {
-            it.printStackTrace()
-        }.onRight {
-            println("Request success")
+        catch (e: UnauthorizedException)
+        {
+            ops.setNonce(e.nonce)
+            ops.setRealm(e.realm)
+            ops.clear()
         }
     }
 }

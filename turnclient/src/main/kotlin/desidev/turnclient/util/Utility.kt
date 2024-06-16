@@ -3,7 +3,7 @@ package desidev.turnclient.util
 import desidev.turnclient.attribute.AddressValue
 import desidev.turnclient.attribute.AttributeType
 import desidev.turnclient.attribute.InetAF
-import desidev.turnclient.message.Message
+import desidev.turnclient.message.TurnMessage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ObsoleteCoroutinesApi
@@ -47,7 +47,7 @@ fun decodeXorAddress(attributeValue: ByteArray): AddressValue {
     val family = attributeValue[1].toInt() and 0xFF
     val addressFamily = InetAF.values().find { it.code == family } ?: throw UnsupportedOperationException("Address family ($family) is not supported")
     val xorPort = ((attributeValue[2].toInt() and 0xFF) shl 8) or (attributeValue[3].toInt() and 0xFF)
-    val magicCookie = Message.MAGIC_COCKIE
+    val magicCookie = TurnMessage.MAGIC_COCKIE
 
     val addressBytes = attributeValue.copyOfRange(4, 8)
     val xorAddress = ByteBuffer.wrap(addressBytes).int
@@ -84,10 +84,10 @@ fun generateHashCode(input: ByteArray, key: String): ByteArray {
  * the result true if the message is unchanged and false otherwise. If the message does not contain a message-integrity attribute
  * then it returns false
  */
-fun checkMessageIntegrity(message: Message, user: String, realm: String, password: String): Boolean {
+fun checkMessageIntegrity(message: TurnMessage, user: String, realm: String, password: String): Boolean {
     val hash = message.attributes.find{ it.type == AttributeType.MESSAGE_INTEGRITY.type }?.getValueAsByteArray()
     if (hash != null) {
-        val msg = Message(
+        val msg = TurnMessage(
             message.header,
             message.attributes.dropLastWhile { it.type == AttributeType.MESSAGE_INTEGRITY.type })
         val target = generateHashCode(msg.encodeToByteArray(), "$user:$realm:$password")

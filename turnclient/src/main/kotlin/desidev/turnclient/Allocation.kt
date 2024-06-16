@@ -3,8 +3,8 @@ package desidev.turnclient
 import kotlin.time.Duration
 
 
-class Allocation(
-    lifetime: Duration,
+data class Allocation(
+    val lifetime: Duration,
     val iceCandidates: List<ICECandidate>
 ) : ExpireAble by ExpireAbleImpl(lifetime)
 
