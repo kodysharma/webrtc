@@ -1,7 +1,5 @@
 package desidev.turnclient
 
-import arrow.core.Either
-import arrow.core.raise.either
 import desidev.turnclient.SocketFailure.PortIsNotAvailable
 import desidev.turnclient.TurnRequestFailure.AllocationMismatchException
 import desidev.turnclient.TurnRequestFailure.BadRequestException
@@ -18,11 +16,17 @@ import desidev.turnclient.message.MessageHeader
 import desidev.turnclient.message.MessageType
 import desidev.turnclient.message.TurnMessage
 import desidev.turnclient.message.TurnRequestBuilder
+import desidev.turnclient.util.NumberSeqGenerator
 import desidev.turnclient.util.toHexString
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import java.net.InetAddress
@@ -31,16 +35,15 @@ import java.nio.ByteBuffer
 import kotlin.time.Duration.Companion.seconds
 
 private const val LIFETIME_SEC = 600
+private const val SOCK_CLOSED_MSG = "Socket is closed"
+
 
 internal interface TurnOperations
 {
     suspend fun allocate(): Allocation
     suspend fun refresh()
     suspend fun clear()
-    suspend fun createPermission(
-        channelNumber: Int, peerAddress: AddressValue
-    )
-
+    suspend fun createPermission(channelNumber: Int, peerAddress: AddressValue)
     suspend fun send(msg: ByteArray, channelNumber: Int)
     fun setRealm(realm: String)
     fun setNonce(nonce: String)
@@ -61,35 +64,52 @@ interface TurnSocket
      * Create Peer Permission via channel binding.
      * You can start communicating after this call.
      */
-    suspend fun addPeer(peer: InetSocketAddress)
-    fun send(message: ByteArray, peer: InetSocketAddress)
-    fun removePeer()
+    suspend fun createPermission(peer: InetSocketAddress)
+    fun removePermission(peer: InetSocketAddress)
+    suspend fun send(message: ByteArray, peer: InetSocketAddress)
     fun isAllocationExist(): Boolean
-    fun addListener(listener: Listener)
-    suspend fun close()
-    fun interface Listener
+    fun addCallback(callback: Callback)
+
+    /**
+     * Delete Allocation
+     */
+    suspend fun clear()
+
+    /**
+     * Don't use after close
+     */
+    fun close()
+    interface Callback
     {
-        fun onReceive(message: ByteArray, peer: InetSocketAddress)
+        fun onReceive(data: ByteArray, peer: InetSocketAddress)
     }
 }
 
-class TurnSocketConfigParameters(
-    var username: String,
-    var password: String,
-    var localHostIp: String = "0.0.0.0",
-    var localPort: Int? = null,
-    var turnServerHost: String,
-    var turnServerPort: Int,
-)
-
 
 /**
+ *
+ * ## Responsibility
+ * - Creating and auto refreshing Allocations.
+ * - Creating Permission via channel binding request and auto refreshing.
+ * - Sending and receiving messages from & to the peer.
+ * - Checking Connectivity with TurnServer.
+ *
+ * ## How to use
+ * Create Allocation using [TurnSocket.allocate] function. Once you have created allocation
+ * You need to create permission to for peer to start exchanging data using
+ * [TurnSocket.createPermission].
+ *
+ * use [TurnSocket.removePermission] if you want to stop communication with a peer.
+ * use [TurnSocket.close] to close the socket and don't use it after closing.
+ * use [TurnSocket.addCallback] to listen incoming message from a peer and other events.
+ *
  * @throws PortIsNotAvailable: When you chose a port which is not available or is out of range.
  * @throws SecurityException: if a security manager exists and its checkListen method doesn't allow the operation.
  */
 fun TurnSocket(
-    configParameters: TurnSocketConfigParameters
-): Either<Exception, TurnSocket> = either()
+    configParameters: TurnSocketConfigParameters,
+    dispatcher: CoroutineDispatcher = Dispatchers.IO
+): TurnSocket
 {
     val socket = UdpSocket(configParameters.localHostIp, configParameters.localPort)
     val turnConfig = TurnConfig(
@@ -99,13 +119,106 @@ fun TurnSocket(
         port = configParameters.turnServerPort,
     )
 
-    object : TurnSocket
+    return object : TurnSocket
     {
+        private var scope = CoroutineScope(dispatcher)
         private var allocation: Allocation? = null
         private val operations = TurnOperationsImpl(socket, turnConfig)
+        private val channelBindingRegister = ChannelBindingRegister()
+        private val numberSeqGenerator = NumberSeqGenerator(0x4000..0x7fff)
+        private val callbacks = mutableListOf<TurnSocket.Callback>()
+        private var isClosed: Boolean = false
+        init
+        {
+            addListener()
+            refreshTask()
+        }
+
+        private fun addListener()
+        {
+            operations.setCallback { channelNumber, msg ->
+                channelBindingRegister.getPeerAddress(channelNumber)?.let { peer ->
+                    callbacks.forEach {
+                        it.onReceive(msg, peer)
+                    }
+                }
+            }
+        }
+
+        private fun refreshTask()
+        {
+            scope.launch {
+                while (isActive)
+                {
+                    delay(10)
+                    tryRefreshAllocation()
+                    tryRefreshChannel()
+                    removeExpiredChannel()
+                }
+            }
+        }
+
+        private suspend fun tryRefreshAllocation()
+        {
+            allocation?.let {
+                if (it.isCloseToExpire())
+                {
+                    try
+                    {
+                        operations.refresh()
+                    }
+                    catch (e: StaleNonceException)
+                    {
+                        operations.setNonce(e.nonce)
+                        operations.refresh()
+                    }
+                    catch (e: Throwable)
+                    {
+                        e.printStackTrace()
+                        return@let
+                    }
+                    it.resetExpireTime(LIFETIME_SEC.seconds)
+                }
+            }
+        }
+
+        private suspend fun tryRefreshChannel()
+        {
+            channelBindingRegister.toList().forEach {
+                if (it.isCloseToExpire() && it.enable)
+                {
+                    try
+                    {
+                        operations.createPermission(it.channelNumber, AddressValue.from(it.peer))
+                    }
+                    catch (e: StaleNonceException)
+                    {
+                        operations.setNonce(e.nonce)
+                        operations.createPermission(it.channelNumber, AddressValue.from(it.peer))
+                    }
+                    catch (e: Throwable)
+                    {
+                        e.printStackTrace()
+                        return@forEach
+                    }
+                    it.resetExpireTime(LIFETIME_SEC.seconds)
+                }
+            }
+        }
+
+        private fun removeExpiredChannel()
+        {
+            channelBindingRegister.toList().forEach {
+                if (it.isExpired())
+                {
+                    channelBindingRegister.remove(it.peer)
+                }
+            }
+        }
 
         override suspend fun allocate()
         {
+            check(!isClosed) { "Socket is closed" }
             allocation = try
             {
                 operations.allocate()
@@ -117,6 +230,102 @@ fun TurnSocket(
                 // retry
                 operations.allocate()
             }
+            catch (e: StaleNonceException)
+            {
+                operations.setNonce(e.nonce)
+                // retry
+                operations.allocate()
+            }
+        }
+
+        override fun isAllocationExist(): Boolean
+        {
+            return allocation != null
+        }
+
+        /**
+         * @exception TurnRequestFailure
+         * @exception IllegalStateException if turnSocket is closed
+         */
+        override suspend fun createPermission(peer: InetSocketAddress)
+        {
+            check(!isClosed) { SOCK_CLOSED_MSG }
+            channelBindingRegister.get(peer)?.let {
+                it.enable = true
+                return
+            }
+
+            val number = numberSeqGenerator.next()
+            try
+            {
+                operations.createPermission(number, AddressValue.from(peer))
+            }
+            catch (e: UnauthorizedException)
+            {
+                operations.setNonce(e.nonce)
+                operations.setRealm(e.realm)
+                // retry
+                operations.createPermission(number, AddressValue.from(peer))
+            }
+            catch (e: StaleNonceException)
+            {
+                operations.setNonce(e.nonce)
+                // retry
+                operations.createPermission(number, AddressValue.from(peer))
+            }
+            channelBindingRegister.registerChannel(ChannelBinding(peer, number, true, LIFETIME_SEC))
+        }
+
+        override fun removePermission(peer: InetSocketAddress)
+        {
+            check(!isClosed) { SOCK_CLOSED_MSG }
+            channelBindingRegister.get(peer)?.let {
+                it.enable = false
+            }
+        }
+
+        override fun getIce(): List<ICECandidate>
+        {
+            return allocation?.iceCandidates ?: emptyList()
+        }
+
+
+        override suspend fun clear()
+        {
+            if (isAllocationExist())
+            {
+                try
+                {
+                    operations.clear()
+                } catch (e: StaleNonceException) {
+                    operations.setNonce(e.nonce)
+                    operations.clear()
+                }
+                allocation = null
+                channelBindingRegister.clear()
+            }
+        }
+
+        override fun close()
+        {
+            if (isClosed) return
+            scope.cancel()
+            socket.close()
+            operations.setCallback(null)
+            isClosed = true
+        }
+
+        override suspend fun send(message: ByteArray, peer: InetSocketAddress)
+        {
+            check(!isClosed) { SOCK_CLOSED_MSG }
+            val channelNumber = channelBindingRegister.getChannel(peer)
+            require(channelNumber != null) { "No permission is created for peer address: $peer" }
+            operations.send(message, channelNumber)
+        }
+
+        override fun addCallback(callback: TurnSocket.Callback)
+        {
+            callbacks.add(callback)
         }
     }
 }
@@ -374,7 +583,15 @@ internal class TurnOperationsImpl(
         CompletableDeferred<TurnMessage> by CompletableDeferred()
 }
 
-
 data class TurnConfig(
     val username: String, val password: String, val ip: String, val port: Int
+)
+
+data class TurnSocketConfigParameters(
+    var username: String,
+    var password: String,
+    var localHostIp: String = "0.0.0.0",
+    var localPort: Int? = null,
+    var turnServerHost: String,
+    var turnServerPort: Int,
 )

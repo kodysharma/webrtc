@@ -219,8 +219,6 @@ class RTC {
 
     fun getLocalIce(): List<ICECandidate> =
         localIce ?: throw IllegalStateException("Local ICE not created")
-
-
     suspend fun enableVideoStream(format: RTCMessage.Format) {
         videoStmMutex.withLock {
             if (!isPeerConnectionExist()) {

@@ -1,8 +1,6 @@
 package desidev.turnclient
 
-import arrow.core.getOrElse
-import arrow.core.recover
-import desidev.turnclient.TurnRequestFailure.*
+import desidev.turnclient.TurnRequestFailure.UnauthorizedException
 import desidev.turnclient.attribute.AddressValue
 import kotlinx.coroutines.runBlocking
 import java.net.InetSocketAddress
@@ -36,7 +34,7 @@ class TurnOperationsTest
             }
 
 
-            println("allcation: $alloc ")
+            println("allocation: $alloc ")
         }
     }
 

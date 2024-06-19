@@ -10,6 +10,9 @@ import kotlinx.coroutines.ObsoleteCoroutinesApi
 import kotlinx.coroutines.channels.ticker
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.io.IOException
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.nio.ByteBuffer
 import java.security.MessageDigest
 import javax.crypto.Mac
@@ -114,5 +117,19 @@ fun CoroutineScope.countdownTimer(
         }
         tickerChannel.cancel()
         onFinish?.invoke()
+    }
+}
+fun isReachable(host: String, openPort: Int, timeOutMillis: Int): Boolean
+{
+    try
+    {
+        Socket().use { soc ->
+            soc.connect(InetSocketAddress(host, openPort), timeOutMillis)
+        }
+        return true
+    }
+    catch (ex: IOException)
+    {
+        return false
     }
 }
