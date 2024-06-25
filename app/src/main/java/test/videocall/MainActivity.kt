@@ -4,7 +4,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import test.videocall.ui.CameraToVideoPlayer
+//import test.videocall.ui.CameraToVideoPlayer
 import kotlin.system.exitProcess
 
 class MainActivity : ComponentActivity() {
@@ -17,7 +17,7 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            CameraToVideoPlayer()
+//            CameraToVideoPlayer()
         }
     }
 }

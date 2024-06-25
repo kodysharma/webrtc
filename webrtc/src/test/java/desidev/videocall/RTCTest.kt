@@ -1,8 +1,8 @@
 package desidev.videocall
 
 import desidev.rtc.rtcclient.RTC
-import desidev.turnclient.ICECandidate
-import desidev.turnclient.attribute.TransportProtocol
+import desidev.p2p.ICECandidate
+import desidev.p2p.turn.attribute.TransportProtocol
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 

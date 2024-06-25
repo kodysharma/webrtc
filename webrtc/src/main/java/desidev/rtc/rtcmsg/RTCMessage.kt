@@ -1,7 +1,7 @@
 package desidev.rtc.rtcmsg
 
 import android.media.MediaFormat
-import desidev.turnclient.util.NumberSeqGenerator
+import desidev.p2p.util.NumberSeqGenerator
 import kotlinx.serialization.Serializable
 import java.nio.ByteBuffer
 import kotlin.reflect.full.createInstance

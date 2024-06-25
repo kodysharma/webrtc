@@ -61,7 +61,7 @@ android {
 
 
 dependencies {
-    api(project(":turnclient"))
+    api(project(":p2p"))
     api(project(":rtcmedia"))
     api(project(":utility"))
     implementation(libs.kotlinutils)

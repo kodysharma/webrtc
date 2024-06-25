@@ -5,12 +5,10 @@ import desidev.rtc.rtcmsg.RTCMessage
 import desidev.rtc.rtcmsg.RTCMessage.Control.StreamDisable
 import desidev.rtc.rtcmsg.RTCMessage.Control.StreamEnable
 import desidev.rtc.rtcmsg.RTCMessage.Control.StreamType
-import desidev.turnclient.ChannelBinding
-import desidev.turnclient.DataCallback
-import desidev.turnclient.ICECandidate
-import desidev.turnclient.ICECandidate.CandidateType
-import desidev.turnclient.TurnClient
-import desidev.turnclient.attribute.AddressValue
+import desidev.p2p.turn.ChannelBinding
+import desidev.p2p.ICECandidate
+import desidev.p2p.ICECandidate.CandidateType
+import desidev.p2p.turn.attribute.AddressValue
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable

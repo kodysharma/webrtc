@@ -52,9 +52,10 @@ android {
 }
 
 dependencies {
-    implementation(project(":webrtc"))
+//    implementation(project(":webrtc"))
     implementation(project(":rtcmedia"))
     implementation(project(":utility"))
+    implementation(project(":stub"))
     implementation(libs.androidx.graphics.core)
     runtimeOnly(files("../rtcmedia/libs/yuv.aar"))
 
