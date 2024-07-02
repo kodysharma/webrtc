@@ -1,13 +1,16 @@
 package desidev.p2p
 
 import desidev.p2p.SocketFailure.PortIsNotAvailable
+import mu.KotlinLogging
+import java.io.IOException
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
+import java.util.concurrent.Executors
 import kotlin.random.Random
 
-const val MAX_TRANSACTION_UNIT_SIZE = 1500
+const val MAX_BUFFER_SIZE = 64000
 
 /**
  * Observe UDP Incoming Message interface
@@ -25,7 +28,7 @@ interface MessageObserver {
  * It makes easy to send and receive data
  */
 interface UdpSocket : MessageObserver {
-    fun send(msg: UdpMsg)
+    fun send(msgList: List<UdpMsg>)
     fun close()
     fun isClose(): Boolean
 }
@@ -41,6 +44,7 @@ interface UdpSocket : MessageObserver {
  * @throws SecurityException: if a security manager exists and its checkListen method doesn't allow the operation.
  */
 fun UdpSocket(host: String?, port: Int?): UdpSocket {
+    val logger = KotlinLogging.logger { UdpSocket::class.simpleName }
     if (port != null && !isUdpPortAvailable(port)) {
         throw PortIsNotAvailable(port)
     }
@@ -50,14 +54,23 @@ fun UdpSocket(host: String?, port: Int?): UdpSocket {
     val socket = DatagramSocket(InetSocketAddress(lHost, lPort))
 
     val listenerThread = MessageObserverThread(socket).apply { start() }
+    val executor = Executors.newFixedThreadPool(3)
+
     return object : UdpSocket, MessageObserver by listenerThread {
         private var isClosed = false
-        private var packet = let {
-            val buffer = ByteArray(MAX_TRANSACTION_UNIT_SIZE)
-            DatagramPacket(buffer, 0, buffer.size)
+
+        private val localPacket = object : ThreadLocal<DatagramPacket>() {
+            override fun initialValue(): DatagramPacket {
+                val buffer = ByteArray(MAX_BUFFER_SIZE)
+                return DatagramPacket(buffer, 0, buffer.size)
+            }
         }
 
-        private var buffer = ByteBuffer.wrap(packet.data)
+        private val localBuffer = object : ThreadLocal<ByteBuffer>() {
+            override fun initialValue(): ByteBuffer {
+                return localPacket.get().let { ByteBuffer.wrap(it.data) }
+            }
+        }
 
 
         /**
@@ -66,26 +79,35 @@ fun UdpSocket(host: String?, port: Int?): UdpSocket {
          *
          * @throws IllegalStateException: If the socket is closed.
          */
-        override fun send(msg: UdpMsg) {
+        override fun send(msgList: List<UdpMsg>) {
             check(!isClosed) { "Socket is closed" }
+            msgList.forEach { udpMsg ->
+                executor.submit {
+                    val buffer = localBuffer.get()
+                    val packet = localPacket.get()
+                    val (destIp, destPort) = udpMsg.ipPort
+                    if (udpMsg.bytes.size > buffer.capacity()) {
+                        throw MtuSizeExceed(udpMsg.bytes.size, buffer.capacity())
+                    }
 
-            val (destIp, destPort) = msg.ipPort
-            if (msg.bytes.size > buffer.capacity()) {
-                throw MtuSizeExceed(msg.bytes.size, buffer.capacity())
+                    try {
+                        buffer.clear() // Ensure buffer is cleared before putting new bytes
+                        buffer.put(udpMsg.bytes)
+                        buffer.flip()
+
+                        packet.socketAddress = InetSocketAddress(destIp, destPort)
+                        packet.length = buffer.limit()
+
+                        synchronized(socket) {
+                            socket.send(packet)
+                        }
+                    } catch (ex: IOException) {
+                        logger.error("failed to send $udpMsg", ex)
+                    } finally {
+                        buffer.clear()
+                    }
+                }
             }
-
-            buffer.put(msg.bytes)
-            buffer.flip()
-
-            packet.socketAddress = InetSocketAddress(destIp, destPort)
-            packet.length = buffer.limit()
-
-            try {
-                socket.send(packet)
-            } catch (ex: Exception) {
-                ex.printStackTrace()
-            }
-            buffer.clear()
         }
 
         override fun close() {

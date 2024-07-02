@@ -1,11 +1,5 @@
 package desidev.p2p
 
-import desidev.p2p.agent.ConnectionImpl
-import desidev.p2p.agent.PeerConnectionRegister
-import java.net.InetSocketAddress
-import kotlin.test.Test
-import kotlin.time.Duration.Companion.seconds
-
 /*
 class ConnectionImplRegisterTest {
     @Test

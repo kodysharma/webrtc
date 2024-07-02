@@ -1,13 +1,13 @@
 package desidev.p2p.agent
 
 import com.google.protobuf.InvalidProtocolBufferException
-import desidev.p2p.AgentMessage
+import desidev.p2p.BaseMessage
 import desidev.p2p.ICECandidate
 import desidev.p2p.MessageClass
 import desidev.p2p.MessageType
 import desidev.p2p.NetworkStatus
 import desidev.p2p.TurnRequestFailure.AllocationMismatchException
-import desidev.p2p.agentMessage
+import desidev.p2p.baseMessage
 import desidev.p2p.copy
 import desidev.p2p.turn.TurnConfiguration
 import desidev.p2p.turn.TurnSocket
@@ -62,7 +62,7 @@ import kotlin.time.Duration.Companion.seconds
  */
 interface P2PAgent {
     fun close()
-    suspend fun openConnection(peerIce: List<ICECandidate>): Connection
+    suspend fun openConnection(peerIce: List<ICECandidate>): PeerConnection
     fun setCallback(callback: Callback?)
     interface Callback {
         /**
@@ -121,8 +121,8 @@ fun P2PAgent(
         private val scope = CoroutineScope(dispatcher)
         private var turnSocket = TurnSocket(config.turnConfig)
         private var callback: P2PAgent.Callback? = null
-        private val connections = ConcurrentHashMap<InetSocketAddress, ConnectionImpl>()
-        private val responseCallbacks = MappedCallbacks<String, AgentMessage>()
+        private val connections = ConcurrentHashMap<InetSocketAddress, PeerConnectionImpl>()
+        private val responseCallbacks = MappedCallbacks<String, BaseMessage>()
 
         init {
             listenNetState()
@@ -150,7 +150,7 @@ fun P2PAgent(
         private fun listenTurnSocket() {
             turnSocket.addCallback { data, peer ->
                 val msg = try {
-                    AgentMessage.parseFrom(data)
+                    BaseMessage.parseFrom(data)
                 } catch (e: InvalidProtocolBufferException) {
                     logger.error(e.message, e)
                     return@addCallback
@@ -200,7 +200,7 @@ fun P2PAgent(
                         responseCallbacks.getListener(msg.txId)?.onReceive(msg)
                     }
 
-                    MessageClass.communication -> {
+                    MessageClass.data -> {
                         connections[peer]?.let {
                             it.makeActive()
                             it.receive(msg)
@@ -214,13 +214,13 @@ fun P2PAgent(
 
         private suspend fun openConnection(peer: InetSocketAddress) {
             val uid = UUID.randomUUID().toString()
-            val message = agentMessage {
+            val message = baseMessage {
                 class_ = MessageClass.request
                 type = MessageType.open
                 txId = uid
             }
 
-            val deferred = CompletableDeferred<AgentMessage>()
+            val deferred = CompletableDeferred<BaseMessage>()
             responseCallbacks.register(uid) { deferred.complete(it) }
             turnSocket.send(message.toByteArray(), peer)
 
@@ -293,10 +293,10 @@ fun P2PAgent(
             }
         }
 
-        private fun ConnectionImpl.ping() {
+        private fun PeerConnectionImpl.ping() {
             scope.launch {
                 try {
-                    sendP2pRequest(agentMessage {
+                    sendP2pRequest(baseMessage {
                         class_ = MessageClass.request
                         type = MessageType.ping
                         txId = UUID.randomUUID().toString()
@@ -315,8 +315,8 @@ fun P2PAgent(
             }
         }
 
-        private suspend fun ConnectionImpl.sendP2pRequest(request: AgentMessage): AgentMessage {
-            val deferred = DeferredObject<AgentMessage>()
+        private suspend fun PeerConnectionImpl.sendP2pRequest(request: BaseMessage): BaseMessage {
+            val deferred = DeferredObject<BaseMessage>()
             responseCallbacks.register(request.txId, deferred)
             val maxTries = 2
             var tries = 0
@@ -339,39 +339,18 @@ fun P2PAgent(
             }
         }
 
-        override suspend fun openConnection(peerIce: List<ICECandidate>): Connection {
+        override suspend fun openConnection(peerIce: List<ICECandidate>): PeerConnection {
             val peerAddress = peerIce.find { it.type == ICECandidate.CandidateType.RELAY }!!.let {
                 InetSocketAddress(it.ip, it.port)
             }
-
             turnSocket.createPermission(peerAddress)
             openConnection(peerAddress)
 
-            val sendFunction = SendFunction {
-
-            }
-            return object : ConnectionImpl(
-                peerAddress, true, this, sendFunction, config.pingInterval,
-                config.peerReconnectTimeout
-            ) {
-                init {
-                    connections[peerAddress] = this
-                }
-
-                /**
-                 * This connection would be removed from the p2p agent.
-                 */
-                override suspend fun close() {
-                    try {
-                        sendP2pRequest(agentMessage {
-                            txId = UUID.randomUUID().toString()
-                            class_ = MessageClass.request
-                            type = MessageType.close
-                        })
-                    } catch (e: Status.PeerUnreachable) {
-                        logger.error { "closing connection without ack! remote: $peerAddress" }
-                    }
-                }
+            return PeerConnection(
+                peerAddress,
+                UUID.randomUUID().toString()
+            ).apply {
+                makeActive()
             }
         }
 
@@ -398,6 +377,36 @@ fun P2PAgent(
 
         override fun setCallback(callback: P2PAgent.Callback?) {
             this.callback = callback
+        }
+
+
+        private inner class PeerConnection(
+            peerAddress: InetSocketAddress, connectionId: String
+        ) : PeerConnectionImpl(
+            pingInterval = config.pingInterval,
+            peerReconnectTime = config.peerReconnectTimeout,
+            peerAddress = peerAddress,
+            connectionId = connectionId,
+            active = false,
+            agent = this
+        ) {
+            override fun onSend(bytes: BaseMessage) {
+                scope.launch {
+                    turnSocket.send(bytes.toByteArray(), peerAddress)
+                }
+            }
+
+            override suspend fun close() {
+                try {
+                    sendP2pRequest(baseMessage {
+                        txId = UUID.randomUUID().toString()
+                        class_ = MessageClass.request
+                        type = MessageType.close
+                    })
+                } catch (e: Status.PeerUnreachable) {
+                    logger.error { "closing connection without ack! remote: $peerAddress" }
+                }
+            }
         }
     }
 }

@@ -133,3 +133,11 @@ fun isReachable(host: String, openPort: Int, timeOutMillis: Int): Boolean
         return false
     }
 }
+
+
+fun preciseDelay(nanoseconds: Long) {
+    val targetTime = System.nanoTime() + nanoseconds
+    while (System.nanoTime() < targetTime) {
+        // Busy-wait loop
+    }
+}

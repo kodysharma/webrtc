@@ -2,7 +2,7 @@ package desidev.p2p.agent
 
 import java.net.InetSocketAddress
 
-interface Connection {
+interface PeerConnection {
     val active: Boolean
     val peerAddress: InetSocketAddress
     val agent: P2PAgent

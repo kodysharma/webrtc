@@ -119,19 +119,42 @@ interface P2PAgent {
     - if no -: saves the data into a sorted structure.
 
 ### sender side
+**dataQueue**: queue of data object with sequence id.
+**segmentCap**: variable maximum number of data segment that could be sent in one go.
+**segsize**: fixed segment size
+**avgRtt**: average round trip time from the last 20 round trip time.
+**dataLoad**: list of data loaded from the dataQueue. Its size is lower than the segmentCap.
 
-1. create a data structure to track data acceptance.
-2. receive data from client
-3. check if the size of send data items in the structure is greater than 100
-    - yes :- if the all data items is marked as accepted
-        - yes :- clear the structure and send data to peer and put the data item into structure.
-            - notify sender for successfully send then go to point (2)
-        - no :- wait for all the data items in the structure to be accepted by the peer after it
-          goto point (3).
-    - no :- send data to the peer and save it to the structure to track its acceptance.
+**SegCapUpMode** : Tells how to update the segmentCap value. Increase/Decrease by Percent,
+Multiplication.
 
-4. send it to the peer with a sequence number and save it into a structure.
-5. received acceptance data from the peer and read sequence number
+1. load data from the 'dataQueue' into 'dataLoad' list.
 
-6. create a task in parallel to resend data that is not marked as send this task resend data every 3
-   seconds. 
+    ```kotlin
+
+    dataList.clear()
+    while (dataQueue.isNotEmpty()) {
+        if (dataList.size < segmentCap) {
+            dataList.add(dataQueue.remove())
+        } else {
+            when(segCapUpMode) {
+                // increase by 10 percent
+                is Percent -> { segmentCap *= 1.1  }
+                is Multiplication -> { segmentCap *= 2 }
+            }        
+            break
+        }
+    }
+    
+    ```
+   if the segmentCap is not enough tries to increase its size by the current SegCapUpMode.
+
+2. If we have some data segments loaded into dataLoad structure. Send all the data in one go and
+   wait for acknowledgements. Choose the max waiting time twice of the avgRtt as ack-timeout.
+
+3. if (timeout)
+    - checks that how many segments has failed to sent
+    - decreased the segmentCap by n (number of failed segments)
+    - put the all failed segments at the head in dataQueue.
+
+4. repeat from point 1

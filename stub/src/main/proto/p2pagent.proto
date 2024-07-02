@@ -3,40 +3,42 @@ syntax = "proto3";
 option java_package = "desidev.p2p";
 option java_multiple_files = true;
 
-message AgentMessage {
+message BaseMessage {
   MessageClass class = 1;
   MessageType type = 2;
+
+  // request/response, open/close
   optional string txId = 3;
-  optional uint64 seqId = 4;
+
+  // response, open
   optional bool accepted = 7;
-  optional Reliable reliable = 5;
-  optional NonReliable nonReliable = 6;
+
+  // data, seq
+  optional uint64 seqId = 4;
+  optional bool isReliable = 10;
+  optional BodyType bodyType = 11;
+  optional bytes bytes = 12;
+
+  // data, ack
+  optional uint64 ackMillis = 8;
+  repeated uint64 seqIds = 9;
 }
 
 enum MessageClass {
   request = 0;
   response = 1;
-  communication = 2;
+  data = 2;
 }
 
 enum MessageType {
+  // request, response
   open = 0;
   close = 1;
   ping = 3;
-  reliable = 5;
-  nonReliable = 6;
-  relConfirm = 7;
-}
 
-message Reliable {
-  BodyType bodyType = 2;
-  repeated bytes data = 3;
-}
-
-message NonReliable {
-  BodyType bodyType = 1;
-  int32 index = 2;
-  repeated bytes data = 3;
+  // data
+  seq = 4;
+  ack = 5;
 }
 
 enum BodyType {

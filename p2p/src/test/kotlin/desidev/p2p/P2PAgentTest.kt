@@ -1,6 +1,6 @@
 package desidev.p2p
 
-import desidev.p2p.agent.Connection
+import desidev.p2p.agent.PeerConnection
 import desidev.p2p.agent.P2PAgent
 import desidev.p2p.agent.P2PAgent.Config
 import desidev.p2p.turn.TurnConfiguration
@@ -10,9 +10,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import mu.KotlinLogging
-import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.ConcurrentMap
 import kotlin.test.Test
 
 class P2PAgentTest {
@@ -78,7 +75,7 @@ class P2PAgentTest {
 
         launch {
             agent1.openConnection(deferred2.await()).let {
-                it.setCallback(object : Connection.Callback {
+                it.setCallback(object : PeerConnection.Callback {
                     override fun onConnectionClosed() {
                         logger.debug { "agent1: on Connection closed" }
                     }
@@ -101,7 +98,7 @@ class P2PAgentTest {
         }
         launch {
             val connection = agent2.openConnection(deferred1.await()).apply {
-                setCallback(object : Connection.Callback {
+                setCallback(object : PeerConnection.Callback {
                     override fun onConnectionClosed() {
                         logger.debug { "agent2: on Connection closed" }
                     }

@@ -47,4 +47,4 @@ sealed class SocketFailure : IOException()
 }
 
 
-class DataSendBlockedException(message: String) : Exception(message)
+class LineBlockException(message: String) : Exception(message)

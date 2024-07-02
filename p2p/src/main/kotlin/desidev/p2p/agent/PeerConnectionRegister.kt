@@ -3,23 +3,23 @@ package desidev.p2p.agent
 import java.net.InetSocketAddress
 
 internal class PeerConnectionRegister {
-    private val peerById = mutableMapOf<String, ConnectionImpl>()
-    private val peerByAddress = mutableMapOf<InetSocketAddress, ConnectionImpl>()
+    private val peerById = mutableMapOf<String, PeerConnectionImpl>()
+    private val peerByAddress = mutableMapOf<InetSocketAddress, PeerConnectionImpl>()
     private val lock = Any()
-    fun add(peerConnection: ConnectionImpl) {
+    fun add(peerConnection: PeerConnectionImpl) {
         synchronized(lock) {
             peerById[peerConnection.connectionId] = peerConnection
             peerByAddress[peerConnection.peerAddress] = peerConnection
         }
     }
 
-    fun getByPeerId(peerId: String): ConnectionImpl? {
+    fun getByPeerId(peerId: String): PeerConnectionImpl? {
         synchronized(lock) {
             return peerById[peerId]
         }
     }
 
-    fun getByPeerAddress(peerAddress: InetSocketAddress): ConnectionImpl? {
+    fun getByPeerAddress(peerAddress: InetSocketAddress): PeerConnectionImpl? {
         synchronized(lock) {
             return peerByAddress[peerAddress]
         }
@@ -37,7 +37,7 @@ internal class PeerConnectionRegister {
         }
     }
 
-    fun removeByPeerId(peerId: String): ConnectionImpl? {
+    fun removeByPeerId(peerId: String): PeerConnectionImpl? {
         synchronized(lock) {
             val peerConnection = peerById.remove(peerId)
             if (peerConnection != null) {
@@ -47,7 +47,7 @@ internal class PeerConnectionRegister {
         }
     }
 
-    fun removeByPeerAddress(peerAddress: InetSocketAddress): ConnectionImpl? {
+    fun removeByPeerAddress(peerAddress: InetSocketAddress): PeerConnectionImpl? {
         synchronized(lock) {
             val peerConnection = peerByAddress.remove(peerAddress)
             if (peerConnection != null) {
@@ -57,7 +57,7 @@ internal class PeerConnectionRegister {
         }
     }
 
-    fun forEach(action: (ConnectionImpl) -> Unit) {
+    fun forEach(action: (PeerConnectionImpl) -> Unit) {
         synchronized(lock) {
             peerById.values.forEach(action)
         }
