@@ -2,15 +2,15 @@ package desidev.p2p
 
 import desidev.p2p.SocketFailure.PortIsNotAvailable
 import mu.KotlinLogging
-import java.io.IOException
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.random.Random
 
-const val MAX_BUFFER_SIZE = 64000
+const val MAX_BUFFER_SIZE = 1500
 
 /**
  * Observe UDP Incoming Message interface
@@ -33,7 +33,6 @@ interface UdpSocket : MessageObserver {
     fun isClose(): Boolean
 }
 
-
 /**
  * Builder Function for [UdpSocket]
  * @param host : Optional local ip address  for this socket by default it is "0.0.0.0"
@@ -51,13 +50,13 @@ fun UdpSocket(host: String?, port: Int?): UdpSocket {
 
     val lHost = host ?: "0.0.0.0"
     val lPort = port ?: getRandomAvailableUDPPort()
-    val socket = DatagramSocket(InetSocketAddress(lHost, lPort))
-
-    val listenerThread = MessageObserverThread(socket).apply { start() }
     val executor = Executors.newFixedThreadPool(3)
+    val inetAddress = InetSocketAddress(lHost, lPort)
+    val socket = DatagramSocket(inetAddress)
+    val isClosed = AtomicBoolean(false)
+    val listenerThread = MessageObserverThread(socket, isClosed).apply { start() }
 
     return object : UdpSocket, MessageObserver by listenerThread {
-        private var isClosed = false
 
         private val localPacket = object : ThreadLocal<DatagramPacket>() {
             override fun initialValue(): DatagramPacket {
@@ -72,7 +71,6 @@ fun UdpSocket(host: String?, port: Int?): UdpSocket {
             }
         }
 
-
         /**
          * @throws MtuSizeExceed : When the data size is bigger than the Mtu (Max transaction
          * unit) limit.
@@ -80,7 +78,7 @@ fun UdpSocket(host: String?, port: Int?): UdpSocket {
          * @throws IllegalStateException: If the socket is closed.
          */
         override fun send(msgList: List<UdpMsg>) {
-            check(!isClosed) { "Socket is closed" }
+            check(!isClosed.get()) { "Socket is closed" }
             msgList.forEach { udpMsg ->
                 executor.submit {
                     val buffer = localBuffer.get()
@@ -91,17 +89,17 @@ fun UdpSocket(host: String?, port: Int?): UdpSocket {
                     }
 
                     try {
-                        buffer.clear() // Ensure buffer is cleared before putting new bytes
+                        buffer.clear()
                         buffer.put(udpMsg.bytes)
                         buffer.flip()
 
                         packet.socketAddress = InetSocketAddress(destIp, destPort)
                         packet.length = buffer.limit()
 
-                        synchronized(socket) {
+                        synchronized(this) {
                             socket.send(packet)
                         }
-                    } catch (ex: IOException) {
+                    } catch (ex: Exception) {
                         logger.error("failed to send $udpMsg", ex)
                     } finally {
                         buffer.clear()
@@ -112,17 +110,23 @@ fun UdpSocket(host: String?, port: Int?): UdpSocket {
 
         override fun close() {
             socket.close()
-            isClosed = true
+            isClosed.set(true)
+            executor.shutdown()
         }
 
-        override fun isClose() = isClosed
+        override fun isClose(): Boolean {
+            return isClosed.get()
+        }
     }
 }
 
 /**
  * While the socket is open this thread continues to receive messages.
  */
-private class MessageObserverThread(private val socket: DatagramSocket) : Thread(),
+private class MessageObserverThread(
+    private val socket: DatagramSocket,
+    val isClose: AtomicBoolean
+) : Thread(),
     MessageObserver {
     private var msgCallbacks = mutableListOf<MessageObserver.MsgCallback>()
     override fun run() {
@@ -135,7 +139,7 @@ private class MessageObserverThread(private val socket: DatagramSocket) : Thread
             DatagramPacket(buffer, 0, buffer.size)
         }
 
-        while (!socket.isClosed) {
+        while (!isClose.get()) {
             try {
                 socket.receive(packet)
                 val udpMsg = with(packet) {

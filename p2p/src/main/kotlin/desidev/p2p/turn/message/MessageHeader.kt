@@ -1,5 +1,6 @@
 package desidev.p2p.turn.message
 
+import desidev.p2p.util.toHexString
 import java.nio.ByteBuffer
 
 data class MessageHeader(
@@ -24,6 +25,7 @@ data class MessageHeader(
         appendLine("MagicCookie(${String.format("%02x", magicCookie)})")
         appendLine("TransactionId(${txId})")
     }.toString()
+
     data class TransactionId(val bytes: ByteArray){
         override fun equals(other: Any?): Boolean {
             if (this === other) return true
@@ -36,6 +38,10 @@ data class MessageHeader(
 
         override fun hashCode(): Int {
             return bytes.contentHashCode()
+        }
+
+        override fun toString(): String {
+            return bytes.toHexString()
         }
 
     }

@@ -7,52 +7,60 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import online.desidev.kotlinutils.ReentrantMutex
 import java.net.InetSocketAddress
 import kotlin.time.Duration.Companion.seconds
 
-object NetworkStatus
-{
+object NetworkStatus {
     private val remoteServer = InetSocketAddress("8.8.8.8", 53)
     private val scope = CoroutineScope(Dispatchers.IO)
     private val callbacks = mutableListOf<Callback>()
-    private val timer = ExpireTimerImpl(5.seconds)
-    @Volatile var isNetworkAvailable: Boolean = isReachable()
+    private val timer = ExpireTimerImpl(20.seconds)
+    private val mutex = ReentrantMutex()
 
-    init
-    {
+    @Volatile
+    var isNetworkAvailable: Boolean = false
+
+    init {
         checkNetworkTask()
     }
 
-    private fun checkNetworkTask()
-    {
+    private fun checkNetworkTask() {
         scope.launch {
-            while (isActive)
-            {
-                if (!timer.isExpired())
-                {
-                    delay(10)
-                    continue
-                }
+            while (isActive) {
+                notifyNetStatusChange()
                 timer.resetExpireTime()
-                val reachable = isReachable()
-                if (reachable != isNetworkAvailable)
-                {
-                    isNetworkAvailable = reachable
-                    synchronized(callbacks) {
-                        if (isNetworkAvailable)
-                        {
-                            callbacks.forEach { it.onNetworkReachable() }
-                        } else
-                        {
-                            callbacks.forEach { it.onNetworkUnreachable() }
-                        }
-                    }
+
+                if (!timer.isExpired()) {
+                    delay(timer.expiresIn())
                 }
             }
         }
     }
 
-    private fun isReachable() = isReachable(remoteServer.hostString, remoteServer.port, 5000)
+    private suspend fun notifyNetStatusChange() {
+        mutex.withLock {
+            println("notifyNetStatusChange()")
+            val reachable = isReachable()
+            if (isNetworkAvailable != reachable) {
+                isNetworkAvailable = reachable
+                if (reachable) {
+                    callbacks.forEach { it.onNetworkReachable() }
+                } else {
+                    callbacks.forEach { it.onNetworkUnreachable() }
+                }
+            }
+        }
+    }
+
+    private suspend fun isReachable() = withContext(Dispatchers.IO) {
+        isReachable(
+            remoteServer.hostString,
+            remoteServer.port,
+            5000
+        )
+    }
 
     fun addCallback(callback: Callback) = synchronized(callbacks) {
         callbacks.add(callback)
@@ -62,16 +70,15 @@ object NetworkStatus
         callbacks.remove(callback)
     }
 
-    interface Callback
-    {
+    interface Callback {
         fun onNetworkReachable() {
             //
         }
+
         fun onNetworkUnreachable() {}
     }
 
-    fun close()
-    {
+    fun close() {
         scope.cancel()
     }
 }

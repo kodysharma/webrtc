@@ -1,20 +1,23 @@
-package desidev.p2p
+package test.videocall
 
+import android.util.Log
+import desidev.p2p.ICECandidate
+import desidev.p2p.TurnRequestFailure
+import desidev.p2p.UdpSocket
 import desidev.p2p.agent.P2PAgent
 import desidev.p2p.agent.P2PAgent.Config
 import desidev.p2p.agent.PeerConnection
 import desidev.p2p.turn.TurnConfiguration
+import desidev.p2p.turn.TurnSocket
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import mu.KotlinLogging
-import kotlin.test.Test
-import kotlin.time.Duration.Companion.seconds
+import org.junit.Test
 
 class P2PAgentTest {
-    private val logger = P2PAgentTest::class.simpleName!!.let { KotlinLogging.logger(it) }
+    private val TAG = "P2pAgentTest"
     private val username = "test"
     private val password = "test123"
     private val turnConfig = TurnConfiguration(
@@ -24,6 +27,17 @@ class P2PAgentTest {
     private val agent1 = P2PAgent(Config(turnConfig = turnConfig))
     private val agent2 = P2PAgent(Config(turnConfig = turnConfig))
 
+    private val turnSocket = TurnSocket(turnConfig)
+
+
+    @Test
+    fun createAllocation_Test() {
+        runBlocking {
+            turnSocket.allocate()
+            println("allocation: ${turnSocket.getIce()} ")
+        }
+    }
+
     @Test
     fun agent_test(): Unit = runBlocking(Dispatchers.IO) {
         val deferred1 = CompletableDeferred<List<ICECandidate>>()
@@ -31,48 +45,51 @@ class P2PAgentTest {
 
         agent1.setCallback(object : P2PAgent.Callback {
             override fun onNetworkConfigUpdate(ice: List<ICECandidate>) {
-                logger.debug { "net config update: $ice" }
+                Log.d(TAG, "nect config update: $ice")
                 deferred1.complete(ice)
             }
 
             override fun onError(e: Throwable) {
-                logger.error(e.message, e)
+                Log.e(TAG, "", e)
             }
         })
 
         agent2.setCallback(object : P2PAgent.Callback {
             override fun onNetworkConfigUpdate(ice: List<ICECandidate>) {
-                logger.debug { "net config update: $ice" }
+                Log.d(TAG, "nect config update: $ice")
                 deferred2.complete(ice)
             }
 
             override fun onError(e: Throwable) {
-                logger.error(e.message, e)
+                Log.e(TAG, "", e)
             }
         })
 
         launch {
             val conn = agent1.openConnection(deferred2.await())
+
             conn.setCallback(object : PeerConnection.Callback {
                 override fun onConnectionClosed() {
-                    logger.debug { "agent1: on Connection closed" }
                 }
 
                 override fun onConnectionActive() {
+
                 }
 
                 override fun onConnectionInactive() {
+
                 }
             })
 
-            logger.debug { "agent 1: connection open " }
+            conn.relStream.receive {
+                Log.d(TAG, "agent 1 receive => ${it.decodeToString()}")
+            }
         }
 
         launch {
             val connection = agent2.openConnection(deferred1.await()).apply {
                 setCallback(object : PeerConnection.Callback {
                     override fun onConnectionClosed() {
-                        logger.debug { "agent2: on Connection closed" }
                     }
 
                     override fun onConnectionActive() {
@@ -83,28 +100,10 @@ class P2PAgentTest {
                 })
             }
 
-            logger.debug { "agent 2: connection open " }
-
-            val timer = ExpireTimerImpl(5.seconds)
-
-
-            while (timer.isExpired().not()) {
-                try {
-                    connection.relStream.send("rel".plus(randomText()).toByteArray())
-                    connection.stream.send(randomText().encodeToByteArray())
-                } catch (ex: LineBlockException) {
-                    delay(100)
-                }
+            connection.relStream.receive {
             }
-
-            connection.close()
         }
-    }
 
-
-    private fun randomText(): String {
-        val byteArray = ByteArray(1300)
-        byteArray.fill(('a'..'z').random().code.toByte())
-        return byteArray.decodeToString()
+        delay(10 * 60 * 1000)
     }
 }

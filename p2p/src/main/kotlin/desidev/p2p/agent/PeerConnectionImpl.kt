@@ -8,17 +8,40 @@ import java.net.InetSocketAddress
 import java.util.UUID
 import kotlin.time.Duration
 
-internal abstract class PeerConnectionImpl(
+internal class PeerConnectionImpl(
     override val peerAddress: InetSocketAddress,
     override var active: Boolean,
     override val agent: P2PAgent,
     val connectionId: String = UUID.randomUUID().toString(),
     pingInterval: Duration,
-    peerReconnectTime: Duration
+    peerReconnectTime: Duration,
+    private val onClose: suspend (PeerConnection) -> Unit,
+    private val onSend: (BaseMessage) -> Unit
 ) : PeerConnection {
 
     val pingInterval: ExpireTimer = ExpireTimerImpl(pingInterval)
     val peerReconnectTime: ExpireTimer = ExpireTimerImpl(peerReconnectTime)
+    private val transportReceiveListener = mutableListOf<TransportReceiveListener>()
+
+    private val transport = object : Transport {
+        override fun send(baseMessage: BaseMessage) {
+            onSend(baseMessage)
+        }
+
+        override fun receive(listener: TransportReceiveListener) {
+            transportReceiveListener.add(listener)
+        }
+    }
+
+    override val relStream: Stream = PeerStream(
+        reliable = true,
+        transport = transport
+    )
+
+    override val stream: Stream = PeerStream(
+        reliable = false,
+        transport = transport
+    )
 
     @Volatile
     var isClosed: Boolean = false
@@ -27,13 +50,27 @@ internal abstract class PeerConnectionImpl(
         this._callback = callback
     }
 
-
-    override fun send(data: ByteArray, reliable: Boolean) {
-
+    override suspend fun close() {
+        onClose(this)
+        isClosed = true
+        relStream.close()
+        stream.close()
+        notifyCloseEvent()
     }
 
+    fun onReceive(data: BaseMessage) {
+        check(data.class_ == MessageClass.data) {
+            "InvalidArgument! Expected class: ${MessageClass.data.name}"
+        }
 
-    fun onConnectionClosed() {
+        if (data.isReliable) {
+            transportReceiveListener.find { it.isReliable }?.block?.invoke(data)
+        } else {
+            transportReceiveListener.find { !it.isReliable }?.block?.invoke(data)
+        }
+    }
+
+    fun notifyCloseEvent() {
         _callback?.onConnectionClosed()
     }
 
@@ -52,17 +89,6 @@ internal abstract class PeerConnectionImpl(
             _callback?.onConnectionActive()
         }
     }
-
-    fun receive(data: BaseMessage) {
-        check(data.class_ == MessageClass.data) {
-            "InvalidArgument! Expected class: ${MessageClass.data.name}"
-        }
-        if (data.isReliable) {
-
-        }
-    }
-
-    protected abstract fun onSend(bytes: BaseMessage)
 }
 
 

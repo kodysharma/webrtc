@@ -37,7 +37,8 @@ fun ByteArray.toHexString(): String {
  */
 fun String.decodeHexToByteArray(): ByteArray {
     val str = removePrefix("0x")
-    val byteArray = ByteArray(str.length / 2) // I believe that string length would be an even number
+    val byteArray =
+        ByteArray(str.length / 2) // I believe that string length would be an even number
     for (i in 0..str.lastIndex step 2) {
         val nibble = str.slice(i..i + 1)
         byteArray[i / 2] = nibble.toUByte(16).toByte()
@@ -48,8 +49,12 @@ fun String.decodeHexToByteArray(): ByteArray {
 
 fun decodeXorAddress(attributeValue: ByteArray): AddressValue {
     val family = attributeValue[1].toInt() and 0xFF
-    val addressFamily = InetAF.values().find { it.code == family } ?: throw UnsupportedOperationException("Address family ($family) is not supported")
-    val xorPort = ((attributeValue[2].toInt() and 0xFF) shl 8) or (attributeValue[3].toInt() and 0xFF)
+    val addressFamily =
+        InetAF.values().find { it.code == family } ?: throw UnsupportedOperationException(
+            "Address family ($family) is not supported"
+        )
+    val xorPort =
+        ((attributeValue[2].toInt() and 0xFF) shl 8) or (attributeValue[3].toInt() and 0xFF)
     val magicCookie = TurnMessage.MAGIC_COCKIE
 
     val addressBytes = attributeValue.copyOfRange(4, 8)
@@ -87,8 +92,11 @@ fun generateHashCode(input: ByteArray, key: String): ByteArray {
  * the result true if the message is unchanged and false otherwise. If the message does not contain a message-integrity attribute
  * then it returns false
  */
-fun checkMessageIntegrity(message: TurnMessage, user: String, realm: String, password: String): Boolean {
-    val hash = message.attributes.find{ it.type == AttributeType.MESSAGE_INTEGRITY.type }?.getValueAsByteArray()
+fun checkMessageIntegrity(
+    message: TurnMessage, user: String, realm: String, password: String
+): Boolean {
+    val hash = message.attributes.find { it.type == AttributeType.MESSAGE_INTEGRITY.type }
+        ?.getValueAsByteArray()
     if (hash != null) {
         val msg = TurnMessage(
             message.header,
@@ -119,17 +127,14 @@ fun CoroutineScope.countdownTimer(
         onFinish?.invoke()
     }
 }
-fun isReachable(host: String, openPort: Int, timeOutMillis: Int): Boolean
-{
-    try
-    {
+
+fun isReachable(host: String, openPort: Int, timeOutMillis: Int): Boolean {
+    try {
         Socket().use { soc ->
             soc.connect(InetSocketAddress(host, openPort), timeOutMillis)
         }
         return true
-    }
-    catch (ex: IOException)
-    {
+    } catch (ex: IOException) {
         return false
     }
 }

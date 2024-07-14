@@ -30,17 +30,15 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().all {
 }
 
 protobuf {
-    protobuf {
-        protoc {
-            artifact = "com.google.protobuf:protoc:${libs.versions.protobuf.get()}"
-        }
-        generateProtoTasks {
-            all().forEach {
-                it.builtins {
-                    remove("java")
-                    id("java")
-                    create("kotlin")
-                }
+    protoc {
+        artifact = "com.google.protobuf:protoc:${libs.versions.protobuf.get()}"
+    }
+    generateProtoTasks {
+        all().forEach {
+            it.builtins {
+                remove("java")
+                id("java")
+                create("kotlin")
             }
         }
     }

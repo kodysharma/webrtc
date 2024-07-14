@@ -40,21 +40,23 @@ import mu.KotlinLogging
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.time.Duration.Companion.seconds
 
 private const val LIFETIME_SEC = 600
 private const val SOCK_CLOSED_MSG = "Socket is closed"
 
+typealias Lifetime = Int
 
 internal interface TurnOperations {
     suspend fun allocate(): Allocation
-    suspend fun refresh()
+    suspend fun refresh(): Lifetime
     suspend fun clear()
     suspend fun createPermission(channelNumber: Int, peerAddress: AddressValue)
-    suspend fun send(bytes: List<ByteArray>, channelNumber: Int)
+    fun send(bytes: List<ByteArray>, channelNumber: Int)
     fun setRealm(realm: String)
     fun setNonce(nonce: String)
-    fun setCallback(cb: Callback?)
+    fun receive(cb: Callback?)
     fun interface Callback {
         fun onReceive(channelNumber: Int, msg: ByteArray)
     }
@@ -71,7 +73,7 @@ interface TurnSocket {
      */
     suspend fun createPermission(peer: InetSocketAddress)
     fun removePermission(peer: InetSocketAddress)
-    suspend fun send(message: ByteArray, peer: InetSocketAddress)
+    fun send(message: ByteArray, peer: InetSocketAddress)
     fun isAllocationExist(): Boolean
     fun addCallback(callback: Callback)
     suspend fun refresh()
@@ -143,22 +145,20 @@ fun TurnSocket(
         }
 
         private fun listen() {
-            operations.setCallback { channelNumber, msg ->
-                logger.debug {
-                    "data received on $channelNumber"
-                }
-                channelBindingRegister.getPeerAddress(channelNumber)?.let { peer ->
+            operations.receive { channelNumber, msg ->
+                val peer = channelBindingRegister.getPeerAddress(channelNumber)
+                if (peer != null) {
                     callbacks.forEach {
                         it.onReceive(msg, peer)
                     }
-                } ?: logger.debug { "message ingore on channel $channelNumber" }
+                }
             }
         }
 
         private fun refreshTask() {
             scope.launch {
                 while (isActive) {
-                    delay(10)
+                    delay(1000)
                     tryRefreshAllocation()
                     tryRefreshChannel()
                     removeExpiredChannel()
@@ -170,15 +170,17 @@ fun TurnSocket(
             allocation?.let {
                 if (it.isCloseToExpire()) {
                     try {
-                        operations.refresh()
+                        val lifetime = operations.refresh()
+                        allocation?.resetExpireTime(lifetime.seconds)
+
                     } catch (e: StaleNonceException) {
                         operations.setNonce(e.nonce)
-                        operations.refresh()
+                        tryRefreshAllocation()
+
                     } catch (e: Throwable) {
                         e.printStackTrace()
                         return@let
                     }
-                    it.resetExpireTime(LIFETIME_SEC.seconds)
                 }
             }
         }
@@ -188,14 +190,16 @@ fun TurnSocket(
                 if (it.isCloseToExpire() && it.enable) {
                     try {
                         operations.createPermission(it.channelNumber, AddressValue.from(it.peer))
+                        it.resetExpireTime()
+
                     } catch (e: StaleNonceException) {
                         operations.setNonce(e.nonce)
-                        operations.createPermission(it.channelNumber, AddressValue.from(it.peer))
+                        tryRefreshChannel()
+
                     } catch (e: Throwable) {
                         e.printStackTrace()
                         return@forEach
                     }
-                    it.resetExpireTime(LIFETIME_SEC.seconds)
                 }
             }
         }
@@ -225,7 +229,7 @@ fun TurnSocket(
         }
 
         override fun isAllocationExist(): Boolean {
-            return allocation != null
+            return allocation?.isExpired()?.not() ?: false
         }
 
         /**
@@ -269,12 +273,12 @@ fun TurnSocket(
 
         override suspend fun refresh() {
             try {
-                operations.refresh()
+                val lifetime = operations.refresh()
+                allocation?.resetExpireTime(lifetime.seconds)
             } catch (e: StaleNonceException) {
                 operations.setNonce(e.nonce)
-                operations.refresh()
+                refresh()
             }
-            allocation?.resetExpireTime()
         }
 
 
@@ -282,12 +286,12 @@ fun TurnSocket(
             if (isAllocationExist()) {
                 try {
                     operations.clear()
+                    allocation = null
+                    channelBindingRegister.clear()
                 } catch (e: StaleNonceException) {
                     operations.setNonce(e.nonce)
-                    operations.clear()
+                    clear()
                 }
-                allocation = null
-                channelBindingRegister.clear()
             }
         }
 
@@ -295,11 +299,11 @@ fun TurnSocket(
             if (isClosed) return
             scope.cancel()
             socket.close()
-            operations.setCallback(null)
+            operations.receive(null)
             isClosed = true
         }
 
-        override suspend fun send(message: ByteArray, peer: InetSocketAddress) {
+        override fun send(message: ByteArray, peer: InetSocketAddress) {
             check(!isClosed) { SOCK_CLOSED_MSG }
             val channelNumber = channelBindingRegister.getChannel(peer)
             require(channelNumber != null) { "No permission is created for peer address: $peer" }
@@ -326,7 +330,7 @@ internal class TurnOperationsImpl(
 
     private var callback: TurnOperations.Callback? = null
 
-    private val turnMsgTxRegister = mutableMapOf<MessageHeader.TransactionId, MsgTx>()
+    private val turnMsgTxRegister = ConcurrentHashMap<MessageHeader.TransactionId, MsgTx>()
 
     // dispatches incoming udp messages
     private val udpMsgCallback = MessageObserver.MsgCallback { udpMsg ->
@@ -342,18 +346,17 @@ internal class TurnOperationsImpl(
         val turnMsg = try {
             TurnMessage.parse(byteArray)
         } catch (e: InvalidStunMessage) {
-            e.printStackTrace()
+            logger.error(e) { "Invalid Stun message" }
             return@MsgCallback
         }
 
         val msgTx = turnMsgTxRegister[turnMsg.txId]
         msgTx?.complete(turnMsg)
-            ?: println(
-                "TurnMsg Response Discarded with id ${
-                    turnMsg.txId.bytes
-                        .toHexString()
-                }"
-            )
+        if (msgTx == null) {
+            logger.info {
+                "TurnMsg Response Discarded with id ${turnMsg.txId}"
+            }
+        }
     }
 
     init {
@@ -375,7 +378,7 @@ internal class TurnOperationsImpl(
         return handleAllocateResponse(response)
     }
 
-    override suspend fun refresh() {
+    override suspend fun refresh(): Lifetime {
         val request = turnRequest
             .setMessageType(MessageType.ALLOCATE_REFRESH_REQUEST)
             .setLifetime(LIFETIME_SEC)
@@ -385,6 +388,11 @@ internal class TurnOperationsImpl(
         if (response.msgClass != MessageClass.SUCCESS_RESPONSE) {
             throw parseError(response)
         }
+
+        val lifetime = response.attributes.find { it.type == AttributeType.LIFETIME.type }
+            ?.getValueAsInt() ?: throw MissingAttributeException(AttributeType.LIFETIME.name)
+
+        return lifetime
     }
 
     private suspend fun sendTurnRequest(msg: TurnMessage): TurnMessage {
@@ -394,23 +402,23 @@ internal class TurnOperationsImpl(
         val maxRetry = 3
         var retries = 0
 
+        logger.debug { "send turn request: \n$msg" }
+
         try {
             while (retries < maxRetry) {
                 try {
                     msg.sendOnSocket()
-                    val response = withTimeout(4000) {
+                    val response = withTimeout(5000) {
                         msgTx.await()
                     }
                     return response
                 } catch (e: TimeoutCancellationException) {
-                    e.printStackTrace()
                     retries++
                 }
             }
         } finally {
             unregisterMsgTx(msgTx)
         }
-        unregisterMsgTx(msgTx)
         throw ServerUnreachable()
     }
 
@@ -440,7 +448,7 @@ internal class TurnOperationsImpl(
         }
     }
 
-    override suspend fun send(bytes: List<ByteArray>, channelNumber: Int) {
+    override fun send(bytes: List<ByteArray>, channelNumber: Int) {
         val udpMsgs = bytes.map { msg ->
             val buffer = ByteBuffer.allocate(4 + msg.size).apply {
                 putShort(channelNumber.toShort()) // 2 bytes channel number
@@ -461,7 +469,7 @@ internal class TurnOperationsImpl(
         turnRequest.setNonce(nonce)
     }
 
-    override fun setCallback(cb: TurnOperations.Callback?) {
+    override fun receive(cb: TurnOperations.Callback?) {
         this.callback = cb
     }
 

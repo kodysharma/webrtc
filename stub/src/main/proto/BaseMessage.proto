@@ -21,7 +21,6 @@ message BaseMessage {
 
   // data, ack
   optional uint64 ackMillis = 8;
-  repeated uint64 seqIds = 9;
 }
 
 enum MessageClass {

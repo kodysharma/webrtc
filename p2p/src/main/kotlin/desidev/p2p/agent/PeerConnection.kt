@@ -6,12 +6,11 @@ interface PeerConnection {
     val active: Boolean
     val peerAddress: InetSocketAddress
     val agent: P2PAgent
+    val relStream: Stream
+    val stream: Stream
     fun setCallback(callback: Callback)
     suspend fun close()
-    fun send(data: ByteArray, reliable: Boolean)
     interface Callback {
-        fun onReceive(data: ByteArray)
-        fun onReceiveReliable(data: ByteArray)
         fun onConnectionInactive()
         fun onConnectionActive()
         fun onConnectionClosed()
