@@ -41,7 +41,6 @@ object NetworkStatus {
 
     private suspend fun notifyNetStatusChange() {
         mutex.withLock {
-            println("notifyNetStatusChange()")
             val reachable = isReachable()
             if (isNetworkAvailable != reachable) {
                 isNetworkAvailable = reachable

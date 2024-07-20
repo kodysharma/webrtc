@@ -4,19 +4,26 @@ import com.google.protobuf.gradle.remove
 plugins {
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.protobuf)
+    `maven-publish`
+}
+
+afterEvaluate {
+    publishing {
+        publications {
+            create<MavenPublication>("release") {
+                artifactId = "p2p-stub"
+                groupId = "desidev.p2p"
+                version = "1.0.0"
+                from(components["java"])
+            }
+        }
+    }
 }
 
 
 dependencies {
-//    protobuf(project(":protos"))
-
     api(libs.kotlinx.coroutines.core)
-
-//    api(libs.grpc.stub)
-//    api(libs.grpc.protobuf)
-//    api(libs.protobuf.java.util)
-//    api(libs.grpc.kotlin.stub)
-    api(libs.protobuf.kotlin)
+    api(libs.protobuf.kotlin.lite)
 }
 
 kotlin {
@@ -34,11 +41,15 @@ protobuf {
         artifact = "com.google.protobuf:protoc:${libs.versions.protobuf.get()}"
     }
     generateProtoTasks {
-        all().forEach {
-            it.builtins {
+        all().forEach { task ->
+            task.builtins {
                 remove("java")
-                id("java")
-                create("kotlin")
+                id("java") {
+                    option("lite")
+                }
+                id("kotlin") {
+                    option("lite")
+                }
             }
         }
     }

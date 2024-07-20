@@ -16,11 +16,12 @@ message BaseMessage {
   // data, seq
   optional uint64 seqId = 4;
   optional bool isReliable = 10;
-  optional BodyType bodyType = 11;
-  optional bytes bytes = 12;
+  optional Body body = 13;
+}
 
-  // data, ack
-  optional uint64 ackMillis = 8;
+message Body {
+  optional BodyType bodyType = 1;
+  optional bytes data = 2;
 }
 
 enum MessageClass {
@@ -41,9 +42,10 @@ enum MessageType {
 }
 
 enum BodyType {
-  complete = 0;
-  partialStart = 1;
-  partialEnd = 2;
+  complete = 0;       // A complete message body (no fragmentation)
+  partialStart = 1;   // The start of a fragmented message
+  partialMiddle = 2;  // A middle fragment of a fragmented message
+  partialEnd = 3;     // The end of a fragmented message
 }
 
 

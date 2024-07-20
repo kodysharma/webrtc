@@ -62,7 +62,7 @@ import kotlin.time.Duration.Companion.seconds
  */
 interface P2PAgent {
     fun close()
-    suspend fun openConnection(peerIce: List<ICECandidate>): PeerConnection
+    suspend fun openConnection(socketAddress: InetSocketAddress): PeerConnection
     fun setCallback(callback: Callback?)
     interface Callback {
         /**
@@ -133,8 +133,6 @@ fun P2PAgent(
                     logger.error(e.message, e)
                     return@addCallback
                 }
-
-                logger.debug { "$msg" }
 
                 when (msg.class_) {
                     MessageClass.request -> {
@@ -207,7 +205,6 @@ fun P2PAgent(
                         turnSocket.refresh()
                     } catch (e: AllocationMismatchException) {
                         logger.debug { "Network changed!" }
-
                         turnSocket.close()
                         turnSocket = TurnSocket(config.turnConfig)
                         discoverIce()
@@ -295,22 +292,19 @@ fun P2PAgent(
         }
 
         override suspend fun openConnection(
-            peerIce: List<ICECandidate>
+            socketAddress: InetSocketAddress
         ): PeerConnection {
-            val peerAddress = peerIce.find { it.type == ICECandidate.CandidateType.RELAY }!!.let {
-                InetSocketAddress(it.ip, it.port)
-            }
-            turnSocket.createPermission(peerAddress)
+            turnSocket.createPermission(socketAddress)
 
             val peerConnection = PeerConnectionImpl(
-                peerAddress = peerAddress,
+                peerAddress = socketAddress,
                 active = false,
                 agent = this,
                 connectionId = UUID.randomUUID().toString(),
                 pingInterval = config.pingInterval,
                 peerReconnectTime = config.peerReconnectTimeout,
                 onClose = ::onClose,
-                onSend = { onSend(it, peerAddress) }
+                onSend = { onSend(it, socketAddress) }
             )
 
             sendP2pRequest(baseMessage {
@@ -319,7 +313,7 @@ fun P2PAgent(
                 txId = UUID.randomUUID().toString()
             }, peerConnection)
 
-            connections[peerAddress] = peerConnection
+            connections[socketAddress] = peerConnection
             peerConnection.makeActive()
 
             return peerConnection

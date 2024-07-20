@@ -23,7 +23,7 @@ dependencyResolutionManagement {
 
 rootProject.name = "webrtc-android"
 include(":app")
-include(":webrtc")
+//include(":webrtc")
 include(":p2p")
 include(":rtcmedia")
 include(":utility")

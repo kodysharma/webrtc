@@ -8,8 +8,8 @@ afterEvaluate {
     publishing {
         publications {
             create<MavenPublication>("release") {
+                groupId = "desidev"
                 artifactId = "webrtc-media"
-                groupId = "online.desidev"
                 version = "2.1.0"
                 from(components["release"])
             }

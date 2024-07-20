@@ -2,8 +2,6 @@ package test.videocall
 
 import android.util.Log
 import desidev.p2p.ICECandidate
-import desidev.p2p.TurnRequestFailure
-import desidev.p2p.UdpSocket
 import desidev.p2p.agent.P2PAgent
 import desidev.p2p.agent.P2PAgent.Config
 import desidev.p2p.agent.PeerConnection
@@ -65,7 +63,7 @@ class P2PAgentTest {
             }
         })
 
-        launch {
+     /*   launch {
             val conn = agent1.openConnection(deferred2.await())
 
             conn.setCallback(object : PeerConnection.Callback {
@@ -104,6 +102,6 @@ class P2PAgentTest {
             }
         }
 
-        delay(10 * 60 * 1000)
+        delay(10 * 60 * 1000)*/
     }
 }

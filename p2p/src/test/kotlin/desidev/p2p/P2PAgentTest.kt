@@ -10,6 +10,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import mu.KotlinLogging
+import java.net.InetSocketAddress
 import kotlin.test.Test
 import kotlin.time.Duration.Companion.seconds
 
@@ -23,16 +24,20 @@ class P2PAgentTest {
 
     private val agent1 = P2PAgent(Config(turnConfig = turnConfig))
     private val agent2 = P2PAgent(Config(turnConfig = turnConfig))
+    private val sampleData = ByteArray(5000)
 
     @Test
     fun agent_test(): Unit = runBlocking(Dispatchers.IO) {
-        val deferred1 = CompletableDeferred<List<ICECandidate>>()
-        val deferred2 = CompletableDeferred<List<ICECandidate>>()
+        val deferred1 = CompletableDeferred<InetSocketAddress>()
+        val deferred2 = CompletableDeferred<InetSocketAddress>()
+        sampleData.fill(88)
 
         agent1.setCallback(object : P2PAgent.Callback {
             override fun onNetworkConfigUpdate(ice: List<ICECandidate>) {
                 logger.debug { "net config update: $ice" }
-                deferred1.complete(ice)
+                ice.find { it.type == ICECandidate.CandidateType.RELAY}?.let {
+                    deferred1.complete(InetSocketAddress(it.ip, it.port))
+                }
             }
 
             override fun onError(e: Throwable) {
@@ -43,7 +48,9 @@ class P2PAgentTest {
         agent2.setCallback(object : P2PAgent.Callback {
             override fun onNetworkConfigUpdate(ice: List<ICECandidate>) {
                 logger.debug { "net config update: $ice" }
-                deferred2.complete(ice)
+                ice.find { it.type == ICECandidate.CandidateType.RELAY}?.let {
+                    deferred2.complete(InetSocketAddress(it.ip, it.port))
+                }
             }
 
             override fun onError(e: Throwable) {
@@ -65,6 +72,11 @@ class P2PAgentTest {
                 }
             })
 
+            conn.stream.receive { data ->
+                val isCorrupted = !data.contentEquals(sampleData)
+                logger.debug { "corrupted: $isCorrupted" }
+            }
+
             logger.debug { "agent 1: connection open " }
         }
 
@@ -85,26 +97,17 @@ class P2PAgentTest {
 
             logger.debug { "agent 2: connection open " }
 
-            val timer = ExpireTimerImpl(5.seconds)
-
+            val timer = ExpireTimerImpl(10.seconds)
 
             while (timer.isExpired().not()) {
                 try {
-                    connection.relStream.send("rel".plus(randomText()).toByteArray())
-                    connection.stream.send(randomText().encodeToByteArray())
-                } catch (ex: LineBlockException) {
-                    delay(100)
+                    connection.stream.send(sampleData)
+                } catch (e: LineBlockException) {
+                    Thread.sleep(100)
                 }
             }
 
             connection.close()
         }
-    }
-
-
-    private fun randomText(): String {
-        val byteArray = ByteArray(1300)
-        byteArray.fill(('a'..'z').random().code.toByte())
-        return byteArray.decodeToString()
     }
 }

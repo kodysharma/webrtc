@@ -101,17 +101,21 @@ class SendLogicTest {
         val receiver = ReceiveLogic(
             isReliable = true,
             onSend = {
-                ops2.send(listOf(it.toByteArray()), 0x4001)
+                ops2.send(it.toByteArray(), 0x4001)
             },
             onNext = {
-
+                logger.info { "receive: ${it.size}" }
             }
         )
 
         ops2.receive { _, msg ->
             val baseMessage = BaseMessage.parseFrom(msg)
             receiver.receive(
-                ReceiveLogic.Segment(baseMessage.seqId, baseMessage.bytes.toByteArray())
+                ReceiveLogic.Segment(
+                    seqId = baseMessage.seqId,
+                    data = baseMessage.body.data.toByteArray(),
+                    bodyType = baseMessage.body.bodyType
+                )
             )
         }
 
@@ -122,10 +126,12 @@ class SendLogicTest {
                     type = MessageType.seq
                     seqId = it.seqId
                     isReliable = true
-                    bytes = ByteString.copyFrom(it.data)
-                    bodyType = BodyType.complete
+                    body = body {
+                        bodyType = it.bodyType
+                        data = ByteString.copyFrom(it.data)
+                    }
                 }.toByteArray()
-                ops1.send(listOf(bytes), 0x4000)
+                ops1.send(bytes, 0x4000)
             }.start()
         }
 
@@ -142,14 +148,14 @@ class SendLogicTest {
                     val data = randomData()
                     sender.send(data.encodeToByteArray())
                 } catch (e: LineBlockException) {
-                    delay(100)
+                    Thread.sleep(20)
                 }
             }
         }.join()
     }
 
     private fun randomData(): String {
-        val data = ByteArray(1300)
+        val data = ByteArray((700 .. 5000).random())
         data.fill(('a'..'z').random().code.toByte())
         return data.decodeToString()
     }

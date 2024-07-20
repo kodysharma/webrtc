@@ -112,9 +112,7 @@ class VideoPlayer(
         videoDecoder = MediaCodec.createDecoderByType(mime)
         videoDecoder.setCallback(object : MediaCodec.Callback() {
             override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {
-
 //                Log.d(TAG, "onInputBufferAvailable: $index")
-
                 synchronized(inputBuffersLock) {
                     inputBuffers.add(index)
                 }
@@ -125,8 +123,7 @@ class VideoPlayer(
                 index: Int,
                 info: BufferInfo
             ) {
-//                Log.d(TAG, "onOutputBufferAvailable: $index")
-
+                Log.d(TAG, "onOutputBufferAvailable: $index")
                 synchronized(outputBuffersLock) {
                     outputBuffers.add(index to info)
                 }
@@ -168,7 +165,6 @@ class VideoPlayer(
                             if (info.flags and BUFFER_FLAG_CODEC_CONFIG == BUFFER_FLAG_CODEC_CONFIG) {
                                 Log.i(TAG, "codec config ignore!")
                                 inputBuffers.add(index)
-                                continue
                             }
 
                             if (info.flags and BUFFER_FLAG_PARTIAL_FRAME == BUFFER_FLAG_PARTIAL_FRAME) {
@@ -185,6 +181,11 @@ class VideoPlayer(
                                 info.size,
                                 info.presentationTimeUs,
                                 info.flags
+                            )
+
+                            Log.i(
+                                TAG, "Queue Input Buffer: ${array.size}, $index, ${info.flags}," +
+                                        " ${info.offset}, ${info.size}, ${info.presentationTimeUs}"
                             )
 
                         } catch (ex: Exception) {
@@ -209,6 +210,7 @@ class VideoPlayer(
                         val (index, info) = it
                         try {
                             videoDecoder.releaseOutputBuffer(index, info.presentationTimeUs)
+                            Log.i(TAG, "Release Output Buffer: $index")
                         } catch (ex: Exception) {
                             if (ex is CancellationException) throw ex
                             ex.printStackTrace()
@@ -243,8 +245,8 @@ class VideoPlayer(
         }
     }
 
-    fun inputData(buffer: ByteArray, info: BufferInfo) {
-        inputChannel.trySend(Pair(buffer, info))
+    fun inputData(buffer: ByteArray, info: BufferInfo): Boolean {
+        return inputChannel.trySend(Pair(buffer, info)).isSuccess
     }
 
     @Composable

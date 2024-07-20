@@ -65,8 +65,6 @@ dependencies {
     api(project(":rtcmedia"))
     api(project(":utility"))
     implementation(libs.kotlinutils)
-
-
     implementation(libs.gson)
 
     testImplementation(libs.kotlin.test)

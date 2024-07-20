@@ -10,7 +10,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.random.Random
 
-const val MAX_BUFFER_SIZE = 1500
+const val MAX_BUFFER_SIZE = 1400
 
 /**
  * Observe UDP Incoming Message interface
@@ -28,7 +28,7 @@ interface MessageObserver {
  * It makes easy to send and receive data
  */
 interface UdpSocket : MessageObserver {
-    fun send(msgList: List<UdpMsg>)
+    fun send(udpMsg: UdpMsg)
     fun close()
     fun isClose(): Boolean
 }
@@ -77,33 +77,36 @@ fun UdpSocket(host: String?, port: Int?): UdpSocket {
          *
          * @throws IllegalStateException: If the socket is closed.
          */
-        override fun send(msgList: List<UdpMsg>) {
+
+        @Throws(MtuSizeExceed::class)
+        override fun send(udpMsg: UdpMsg) {
             check(!isClosed.get()) { "Socket is closed" }
-            msgList.forEach { udpMsg ->
-                executor.submit {
-                    val buffer = localBuffer.get()
-                    val packet = localPacket.get()
-                    val (destIp, destPort) = udpMsg.ipPort
-                    if (udpMsg.bytes.size > buffer.capacity()) {
-                        throw MtuSizeExceed(udpMsg.bytes.size, buffer.capacity())
+
+            if (udpMsg.bytes.size > MAX_BUFFER_SIZE) {
+                throw MtuSizeExceed(udpMsg.bytes.size, MAX_BUFFER_SIZE)
+            }
+
+            executor.submit {
+                val buffer = localBuffer.get()
+                val packet = localPacket.get()
+                val (destIp, destPort) = udpMsg.ipPort
+
+
+                try {
+                    buffer.clear()
+                    buffer.put(udpMsg.bytes)
+                    buffer.flip()
+
+                    packet.socketAddress = InetSocketAddress(destIp, destPort)
+                    packet.length = buffer.limit()
+
+                    synchronized(this) {
+                        socket.send(packet)
                     }
-
-                    try {
-                        buffer.clear()
-                        buffer.put(udpMsg.bytes)
-                        buffer.flip()
-
-                        packet.socketAddress = InetSocketAddress(destIp, destPort)
-                        packet.length = buffer.limit()
-
-                        synchronized(this) {
-                            socket.send(packet)
-                        }
-                    } catch (ex: Exception) {
-                        logger.error("failed to send $udpMsg", ex)
-                    } finally {
-                        buffer.clear()
-                    }
+                } catch (ex: Exception) {
+                    logger.error("failed to send $udpMsg", ex)
+                } finally {
+                    buffer.clear()
                 }
             }
         }

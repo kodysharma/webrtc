@@ -2,13 +2,14 @@ package desidev.p2p.agent
 
 
 import arrow.atomic.AtomicLong
-import arrow.atomic.update
 import com.google.protobuf.ByteString
 import desidev.p2p.BaseMessage
+import desidev.p2p.BodyType
 import desidev.p2p.LineBlockException
 import desidev.p2p.MessageClass
 import desidev.p2p.MessageType
 import desidev.p2p.baseMessage
+import desidev.p2p.body
 import desidev.p2p.util.preciseDelay
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -16,10 +17,11 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import mu.KotlinLogging
+import java.nio.ByteBuffer
 import java.util.LinkedList
+import java.util.TreeSet
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.ConcurrentLinkedDeque
+import java.util.concurrent.PriorityBlockingQueue
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
@@ -43,18 +45,20 @@ class PeerStream(
     private val transport: Transport,
     reliable: Boolean
 ) : Stream {
-
     private var receiveCallback: ((ByteArray) -> Unit)? = null
 
     private val sendLogic = SendLogic(
         isReliable = reliable,
-        delegateSend = { segment ->
+        delegateSend = { segment: SendLogic.Segment ->
             transport.send(baseMessage {
                 class_ = MessageClass.data
                 type = MessageType.seq
                 isReliable = reliable
                 seqId = segment.seqId
-                bytes = ByteString.copyFrom(segment.data)
+                body = body {
+                    data = ByteString.copyFrom(segment.data)
+                    bodyType = segment.bodyType
+                }
             })
         })
 
@@ -75,7 +79,13 @@ class PeerStream(
                 }
 
                 MessageType.seq -> {
-                    receiveLogic.receive(ReceiveLogic.Segment(it.seqId, it.bytes.toByteArray()))
+                    receiveLogic.receive(
+                        ReceiveLogic.Segment(
+                            seqId = it.seqId,
+                            data = it.body.data.toByteArray(),
+                            bodyType = it.body.bodyType
+                        )
+                    )
                 }
 
                 else -> {
@@ -93,7 +103,6 @@ class PeerStream(
 
     override fun close() {
         sendLogic.close()
-        receiveLogic.close()
     }
 }
 
@@ -118,21 +127,79 @@ internal class SendLogic(
 
     private val rttHistory = LinkedList<Long>()
     private val lossHistory = LinkedList<Float>()
-    private val dataQueue = ConcurrentLinkedDeque<Segment>()
 
-    // contains the send segments helps in to track segment ack.
+    private val comparable = compareBy<Segment> { it.seqId }
+    private val dataQueue = PriorityBlockingQueue(1000, comparable)
+
     private val segmentTraceMap = ConcurrentHashMap<Long, Segment>()
-
     private var sendRate = MIN_RATE // segments/second
     private var mode: Mode = Mode.INITIAL_START
     private var power = 0
-    private var lowestUSequence = AtomicLong(0L)
     private var nextSeq = AtomicLong(0L)
 
 
     init {
         senderJob()
         ackTracingJob()
+    }
+
+    @Throws(LineBlockException::class)
+    fun send(data: ByteArray) {
+        if (dataQueue.size >= sendRate) {
+            throw LineBlockException("Line is blocked, due to buffer is full!")
+        }
+
+        if (dataQueue.isNotEmpty() && nextSeq.get() - dataQueue.first().seqId > 1000) {
+            throw LineBlockException("Line is blocked, due to lowest unacknowledged segment!")
+        }
+
+        createSegments(data, 1300).forEach {
+            dataQueue.add(it)
+        }
+    }
+
+    private fun createSegments(data: ByteArray, mss: Int): List<Segment> = synchronized(this) {
+        val segments = mutableListOf<Segment>()
+        val totalSegments = (data.size + mss - 1) / mss  // Calculate the total number of segments
+
+        for (i in 0 until totalSegments) {
+            val start = i * mss
+            val end = minOf(start + mss, data.size)
+            val segmentData = data.copyOfRange(start, end)
+            val bodyType = when (i) {
+                0 -> if (totalSegments == 1) BodyType.complete else BodyType.partialStart
+                totalSegments - 1 -> BodyType.partialEnd
+                else -> BodyType.partialMiddle
+            }
+            segments.add(
+                Segment(
+                    seqId = nextSeq.getAndIncrement(),
+                    sendTimeMs = 0,
+                    data = segmentData,
+                    bodyType = bodyType
+                )
+            )
+        }
+
+        return segments
+    }
+
+    private fun senderJob() = scope.launch {
+        while (isActive) {
+            while (dataQueue.isEmpty() && segmentTraceMap.isEmpty()) delay(100)
+
+            while (dataQueue.isNotEmpty() && isActive) {
+                val nanoseconds = 1000_000_000.0.div(sendRate).roundToLong()
+                dataQueue.poll()?.let {
+                    launch {
+                        it.sendTimeMs = System.currentTimeMillis()
+                        segmentTraceMap[it.seqId] = it
+                        delegateSend(it)
+                    }.start()
+                    preciseDelay(nanoseconds)
+                }
+            }
+        }
     }
 
     private fun ackTracingJob() = scope.launch {
@@ -147,14 +214,10 @@ internal class SendLogic(
             collectCompleteOrFailedSegments().let { segments ->
                 if (isReliable) {
                     val failed = segments.filter { it.ack.not() }
-                    failed.forEach {
-                        dataQueue.addFirst(it)
+                    if (failed.isNotEmpty()) {
+                        dataQueue.addAll(failed)
                     }
                 }
-            }
-
-            if (segmentTraceMap.isNotEmpty()) {
-                lowestUSequence.set(segmentTraceMap.minBy { it.key }.key)
             }
         }
     }
@@ -176,8 +239,6 @@ internal class SendLogic(
         val unack = segments.filter { !it.ack }
         val loss = unack.size.toFloat() / segments.size
         recordLossRate(loss)
-
-//        logger.debug { "${unack.size}/${segments.size}" }
 
         if (lossHistory.size >= 20) {
             if (avgLr > 0.04) {
@@ -202,9 +263,11 @@ internal class SendLogic(
     }
 
     private fun collectCompleteOrFailedSegments(): List<Segment> {
+
         val currentTime = System.currentTimeMillis()
         val segments = mutableListOf<Segment>()
         val ackTimeout = avgRttMs * 2
+
         segmentTraceMap.entries.removeIf {
             val isAckTimeout = currentTime > it.value.sendTimeMs.plus(ackTimeout)
             if (isAckTimeout) {
@@ -213,25 +276,6 @@ internal class SendLogic(
             isAckTimeout
         }
         return segments
-    }
-
-    private fun senderJob() = scope.launch {
-        while (isActive) {
-            while (dataQueue.isEmpty() && segmentTraceMap.isEmpty()) delay(100)
-
-            while (dataQueue.isNotEmpty() && isActive) {
-                val nanoseconds = 1000_000_000.0.div(sendRate).roundToLong()
-
-                with(dataQueue.remove()) segment@{
-                    launch {
-                        sendTimeMs = System.currentTimeMillis()
-                        segmentTraceMap[seqId] = this@segment
-                        delegateSend(this@segment)
-                    }.start()
-                    preciseDelay(nanoseconds)
-                }
-            }
-        }
     }
 
     fun ackData(seqId: Long): Boolean {
@@ -260,8 +304,6 @@ internal class SendLogic(
             power++
             2.0.pow(power).times(MIN_RATE).toInt()
         }
-
-//        logger.debug { "sendRate up: $sendRate" }
     }
 
     private fun goDown() {
@@ -278,8 +320,6 @@ internal class SendLogic(
             power = power.minus(1).coerceAtLeast(0)
             computeSendRate()
         }.coerceAtLeast(MIN_RATE)
-
-//        logger.debug { "sendRate down: $sendRate" }
     }
 
     private fun computeSendRate() = 2.0.pow(power).times(MIN_RATE).toInt()
@@ -289,27 +329,6 @@ internal class SendLogic(
         avgLr = lossHistory.average()
     }
 
-    @Throws(LineBlockException::class)
-    fun send(data: ByteArray) {
-        if (dataQueue.size >= sendRate) {
-            throw LineBlockException("Line is blocked, due to buffer is full!")
-        }
-
-        if (nextSeq.get() - lowestUSequence.get() > 10000) {
-            logger.debug {
-                "segment with lowest sequence is unack: ${lowestUSequence.get()} .. " +
-                        "${nextSeq.get()}"
-            }
-            throw LineBlockException("Line is blocked, due to lowest unacknowledged segment!")
-        }
-
-        sendInQueue(Segment(data, 0L, nextSeq.get()))
-        nextSeq.update { it + 1 }
-    }
-
-    private fun sendInQueue(data: Segment) {
-        dataQueue.add(data)
-    }
 
     private fun recordRttHistory(rtt: Long) {
         rttHistory.add(rtt)
@@ -330,17 +349,17 @@ internal class SendLogic(
     private fun Double.ceil() = kotlin.math.ceil(this)
 
     companion object {
-        val logger = KotlinLogging.logger { SendLogic::class.simpleName }
         const val INITIAL_RESEND_INTERVAL_MS = 3000
         const val MIN_RATE = 100
         const val RTT_HISTORY_SIZE = 50
     }
 
     data class Segment(
-        val data: ByteArray,
-        @Volatile var sendTimeMs: Long,
         val seqId: Long,
-        @Volatile var ack: Boolean = false
+        @Volatile var ack: Boolean = false,
+        val bodyType: BodyType,
+        @Volatile var sendTimeMs: Long,
+        val data: ByteArray
     ) {
         override fun equals(other: Any?): Boolean {
             if (this === other) return true
@@ -376,114 +395,117 @@ class ReceiveLogic(
     private val onSend: (BaseMessage) -> Unit,
     private val onNext: (ByteArray) -> Unit
 ) {
-    private val sequencer = Sequencer()
-    private val buffer by lazy { linkedSetOf<Segment>() }
-    private var nextSequenceId = 0L
-    private val scope = CoroutineScope(Dispatchers.Default)
+    //    private val queue = PriorityQueue<Segment>(compareBy { it.seqId })
+    private val tempBuffer = mutableListOf<Segment>()
+    private var expectedSeqId: Long = 0L
 
-    init {
-        scope.launch {
-            while (isActive) {
-                delay(1000)
-                if (sequencer.isNotEmpty()) {
-                    dispatch()
-                }
-            }
-        }
-    }
+    private val segments = TreeSet<Segment>()
 
+    @Synchronized
     fun receive(segment: Segment) {
-        sequencer.add(segment)
-        if (sequencer.isFull()) {
-            dispatch()
-        }
         sendAcknowledge(segment.seqId)
-    }
-
-    private fun dispatch() = synchronized(this) {
-        if (isReliable) {
-            dispatchNextReliably()
-        } else {
-            dispatchNext()
-        }
-    }
-
-    private fun dispatchNext() {
-        val segments = sequencer.next()
-        segments.forEach { segment ->
-            onNext(segment.data)
-        }
-    }
-
-    private fun dispatchNextReliably() = synchronized(this) {
-        val segments = sequencer.next()
-
-        var index = 0
-        while (index < segments.size && segments[index].seqId == nextSequenceId) {
-            val seg = segments[index]
-            onNext(seg.data)
-            nextSequenceId++
-            index++
-        }
-
-        buffer.addAll(segments.drop(index))
-        segments.sortedBy { it.seqId }
-
-        while (buffer.isNotEmpty()) {
-            val first = buffer.first()
-            if (first.seqId == nextSequenceId) {
-                onNext(first.data)
-                nextSequenceId++
-                buffer.remove(first)
-            } else {
-                break
+        if (segment.seqId >= expectedSeqId) {
+            segments.add(segment)
+            if (segment.bodyType == BodyType.complete || segment.bodyType == BodyType.partialEnd) {
+                checkForCompleteMessages()
             }
         }
     }
 
     private fun sendAcknowledge(id: Long) {
-        onSend(baseMessage {
-            class_ = MessageClass.data
-            type = MessageType.ack
-            seqId = id
-            isReliable = true
-        })
+        val ackMessage = BaseMessage.newBuilder()
+            .setClass_(MessageClass.data)
+            .setType(MessageType.ack)
+            .setSeqId(id)
+            .setIsReliable(isReliable)
+            .build()
+
+        onSend(ackMessage)
     }
 
-    fun close() {
-        scope.cancel()
+    private fun checkForCompleteMessages() {
+        while (segments.isNotEmpty()) {
+            val segment = segments.first()
+            if (segment.seqId == expectedSeqId) {
+                expectedSeqId++
+                when (segment.bodyType) {
+                    BodyType.partialStart -> {
+                        tempBuffer.clear()
+                        tempBuffer.add(segment)
+                    }
+
+                    BodyType.partialMiddle -> {
+                        tempBuffer.add(segment)
+                    }
+
+                    BodyType.partialEnd -> {
+                        if (tempBuffer.isNotEmpty() && tempBuffer.first().bodyType == BodyType
+                                .partialStart
+                        ) {
+                            tempBuffer.add(segment)
+                            val message = assembleMessage(tempBuffer)
+                            onNext(message)
+                        }
+                    }
+
+                    BodyType.complete -> {
+                        onNext(segment.data)
+                    }
+
+                    BodyType.UNRECOGNIZED -> {
+                        // Ignore
+                    }
+                }
+                segments.remove(segment)
+            } else {
+                if (!isReliable) {
+                    tempBuffer.clear()
+                    expectedSeqId = segment.seqId
+                } else {
+                    break
+                }
+            }
+        }
     }
 
-    inner class Sequencer(private val maxSegments: Int = 128) {
-        private var read = mutableListOf<Segment>()
-        private var write = mutableListOf<Segment>()
-        fun add(segment: Segment) {
-            write.add(segment)
+    private fun assembleMessage(segments: List<Segment>): ByteArray {
+        val byteBuffer = ByteBuffer.allocate(segments.sumOf { it.data.size })
+        segments.forEach { segment ->
+            byteBuffer.put(segment.data)
         }
-
-        fun isFull(): Boolean {
-            return write.size >= maxSegments
-        }
-
-        fun isNotEmpty(): Boolean {
-            return write.isNotEmpty()
-        }
-
-        private fun swap() {
-            val temp = read
-            read = write
-            write = temp
-            write.clear()
-        }
-
-        fun next(): List<Segment> {
-            swap()
-            read.sortBy { it.seqId }
-            return read
-        }
+        return byteBuffer.array()
     }
 
-    class Segment(val seqId: Long, val data: ByteArray)
+
+    data class Segment(
+        val seqId: Long,
+        val bodyType: BodyType,
+        val data: ByteArray
+    ) : Comparable<Segment> {
+        override fun compareTo(other: Segment): Int {
+            return seqId.compareTo(other.seqId)
+        }
+
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (javaClass != other?.javaClass) return false
+
+            other as Segment
+
+            if (seqId != other.seqId) return false
+            if (!data.contentEquals(other.data)) return false
+            if (bodyType != other.bodyType) return false
+
+            return true
+        }
+
+        override fun hashCode(): Int {
+            var result = seqId.hashCode()
+            result = 31 * result + data.contentHashCode()
+            result = 31 * result + bodyType.hashCode()
+            return result
+        }
+    }
 }
 
 

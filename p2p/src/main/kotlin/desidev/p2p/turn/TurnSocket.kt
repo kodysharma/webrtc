@@ -24,7 +24,6 @@ import desidev.p2p.turn.message.MessageType
 import desidev.p2p.turn.message.TurnMessage
 import desidev.p2p.turn.message.TurnRequestBuilder
 import desidev.p2p.util.NumberSeqGenerator
-import desidev.p2p.util.toHexString
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -53,7 +52,7 @@ internal interface TurnOperations {
     suspend fun refresh(): Lifetime
     suspend fun clear()
     suspend fun createPermission(channelNumber: Int, peerAddress: AddressValue)
-    fun send(bytes: List<ByteArray>, channelNumber: Int)
+    fun send(bytes: ByteArray, channelNumber: Int)
     fun setRealm(realm: String)
     fun setNonce(nonce: String)
     fun receive(cb: Callback?)
@@ -307,7 +306,7 @@ fun TurnSocket(
             check(!isClosed) { SOCK_CLOSED_MSG }
             val channelNumber = channelBindingRegister.getChannel(peer)
             require(channelNumber != null) { "No permission is created for peer address: $peer" }
-            operations.send(listOf(message), channelNumber)
+            operations.send(message, channelNumber)
         }
 
         override fun addCallback(callback: TurnSocket.Callback) {
@@ -448,17 +447,15 @@ internal class TurnOperationsImpl(
         }
     }
 
-    override fun send(bytes: List<ByteArray>, channelNumber: Int) {
-        val udpMsgs = bytes.map { msg ->
-            val buffer = ByteBuffer.allocate(4 + msg.size).apply {
-                putShort(channelNumber.toShort()) // 2 bytes channel number
-                putShort(msg.size.toShort()) // 2 bytes data length
-                put(msg) // application data
-            }
-
-            UdpMsg(turnTransportAddress, buffer.array())
+    override fun send(bytes: ByteArray, channelNumber: Int) {
+        val buffer = ByteBuffer.allocate(4 + bytes.size).apply {
+            putShort(channelNumber.toShort()) // 2 bytes channel number
+            putShort(bytes.size.toShort()) // 2 bytes data length
+            put(bytes) // application data
         }
-        socket.send(udpMsgs)
+        socket.send(
+            UdpMsg(turnTransportAddress, buffer.array())
+        )
     }
 
     override fun setRealm(realm: String) {
@@ -473,11 +470,10 @@ internal class TurnOperationsImpl(
         this.callback = cb
     }
 
-    private suspend fun TurnMessage.sendOnSocket() {
-        withContext(ioDispatcher) {
-            val udpMsg = UdpMsg(turnTransportAddress, encodeToByteArray())
-            socket.send(listOf(udpMsg))
-        }
+    private fun TurnMessage.sendOnSocket() {
+        socket.send(
+            UdpMsg(turnTransportAddress, encodeToByteArray())
+        )
     }
 
     private fun handleAllocateResponse(msg: TurnMessage): Allocation {
